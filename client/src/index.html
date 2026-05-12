@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cube Draft - 游戏王轮抽</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ====== LOBBY ====== -->
+<div id="lobby" class="view active">
+  <div class="lobby-container">
+    <h1>Cube Draft</h1>
+    <p class="subtitle">游戏王 Cube 轮抽</p>
+
+    <div class="card panel">
+      <h2>创建房间</h2>
+      <label>玩家昵称</label>
+      <input type="text" id="createName" placeholder="输入昵称" maxlength="12">
+      <label>房间密码 <small>(可选，不填则无密码)</small></label>
+      <input type="text" id="createPassword" placeholder="留空则不设密码" maxlength="20">
+      <label>选择 Cube</label>
+      <select id="cubeSelect"><option value="">加载中...</option></select>
+      <div class="row">
+        <div>
+          <label>玩家数</label>
+          <select id="maxPlayers">
+            <option value="2">2</option><option value="3">3</option>
+            <option value="4" selected>4</option><option value="5">5</option>
+            <option value="6">6</option><option value="7">7</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div>
+          <label>每人包数</label>
+          <select id="packsPerPlayer">
+            <option value="1">1</option><option value="2">2</option>
+            <option value="3">3</option><option value="4" selected>4</option>
+            <option value="5">5</option>
+          </select>
+        </div>
+        <div>
+          <label>每包张数</label>
+          <select id="cardsPerPack">
+            <option value="5">5</option><option value="10">10</option>
+            <option value="15" selected>15</option><option value="20">20</option>
+          </select>
+        </div>
+      </div>
+      <button id="createBtn" class="btn-primary">创建房间</button>
+    </div>
+
+    <div class="divider"><span>或</span></div>
+
+    <div class="card panel">
+      <h2>加入房间</h2>
+      <label>玩家昵称</label>
+      <input type="text" id="joinName" placeholder="输入昵称" maxlength="12">
+      <label>房间号</label>
+      <div class="row">
+        <input type="text" id="roomCode" placeholder="8位房间号" maxlength="8" style="flex:1">
+        <button id="joinBtn" class="btn-secondary">加入</button>
+      </div>
+      <div id="joinPasswordRow" class="hidden">
+        <label>房间密码 <small>(该房间设置了密码)</small></label>
+        <div class="row">
+          <input type="text" id="joinPassword" placeholder="请输入房间密码" maxlength="20" style="flex:1">
+          <button id="joinPasswordBtn" class="btn-primary">确认加入</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="lobbyError" class="error hidden"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js?v=4"></script>
+</body>
+</html>

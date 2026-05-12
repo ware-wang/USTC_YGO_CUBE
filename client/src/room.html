@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cube Draft - 房间</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ====== ROOM (Waiting Room) ====== -->
+<div id="room" class="view active">
+  <div class="room-header">
+    <h2>房间号: <b id="roomIdDisplay"></b></h2>
+    <div class="room-meta">
+      <span>Cube: <b id="roomCubeName"></b></span>
+      <span>规则: <b id="roomRules"></b></span>
+      <span id="roomLockIcon"></span>
+    </div>
+  </div>
+  <div class="room-layout">
+    <!-- Round table + side panel -->
+    <div class="room-main">
+      <div id="roundtable" class="roundtable">
+        <div class="roundtable-center">圆桌</div>
+      </div>
+      <div class="room-actions">
+        <button id="startBtn" class="btn-primary btn-large" disabled>开始轮抽</button>
+        <p id="waitingHint">等待更多玩家加入...</p>
+        <button id="leaveBtn" class="btn-secondary">退出房间</button>
+      </div>
+    </div>
+    <!-- Chat panel -->
+    <div class="room-chat">
+      <div class="chat-header">房间聊天</div>
+      <div id="chatMessages" class="chat-messages">
+        <div class="chat-empty">暂无消息</div>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="输入消息..." maxlength="500">
+        <button id="chatSendBtn" class="btn-primary btn-sm">发送</button>
+      </div>
+    </div>
+  </div>
+  <div class="room-info">
+    <p>把房间号发给朋友，等大家到齐后由房主开始。点击座位上的人可以换座。</p>
+  </div>
+</div>
+
+<!-- ====== DRAFT ====== -->
+<div id="draft" class="view">
+  <div class="draft-header">
+    <span id="roundInfo"></span>
+    <span id="draftDirection"></span>
+    <span id="draftTimer" class="draft-timer">剩余 60s</span>
+  </div>
+  <div id="packArea" class="pack-area"></div>
+  <div class="draft-actions">
+    <button id="confirmPickBtn" class="btn-primary btn-large hidden">确认选择</button>
+    <span id="draftStatus" class="hint"></span>
+  </div>
+</div>
+
+<!-- ====== RESULTS ====== -->
+<div id="results" class="view">
+  <div class="results-header">
+    <h2>轮抽完成！</h2>
+    <p>以下是你的卡池，拖拽或点击卡片来构筑你的卡组</p>
+  </div>
+  <div class="deck-editor">
+    <div class="deck-zone">
+      <h3>卡池 <small id="poolCount"></small></h3>
+      <div id="poolGrid" class="card-grid"></div>
+    </div>
+    <div class="deck-zones">
+      <div class="zone-card">
+        <h3>主卡组 <small id="mainCount">(40-60)</small></h3>
+        <div id="mainDeck" class="card-grid card-grid-sm"></div>
+      </div>
+      <div class="zone-card">
+        <h3>额外卡组 <small id="extraCount">(0-15)</small></h3>
+        <div id="extraDeck" class="card-grid card-grid-sm"></div>
+      </div>
+      <div class="zone-card">
+        <h3>副卡组 <small id="sideCount">(0-15)</small></h3>
+        <div id="sideDeck" class="card-grid card-grid-sm"></div>
+      </div>
+      <div class="deck-actions">
+        <button id="exportYdkBtn" class="btn-primary">导出 YDK</button>
+        <button id="backToLobbyBtn" class="btn-secondary">返回大厅</button>
+        <span id="deckWarning" class="error hidden"></span>
+      </div>
+    </div>
+  </div>
+  <div id="ydkModal" class="modal hidden">
+    <div class="modal-content">
+      <h2>YDK 导出</h2>
+      <pre id="ydkContent"></pre>
+      <div class="modal-actions">
+        <button id="copyYdkBtn" class="btn-secondary">复制</button>
+        <button id="downloadYdkBtn" class="btn-primary">下载 .ydk</button>
+        <button id="closeYdkModal" class="btn-secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== CARD DETAIL MODAL ====== -->
+<div id="cardDetailOverlay" class="card-detail-overlay hidden">
+  <div class="card-detail">
+    <img id="cardDetailImg" class="card-detail-image" src="" alt="" onerror="this.style.display='none';var p=this.parentNode;var d=document.getElementById('cardDetailNoImg');if(d)d.classList.remove('hidden')">
+    <div id="cardDetailNoImg" class="card-detail-no-img hidden">卡图加载中...</div>
+    <div class="card-detail-info">
+      <h3 id="cardDetailName"></h3>
+      <div id="cardDetailMeta" class="card-detail-meta"></div>
+      <div id="cardDetailDesc" class="card-detail-desc"></div>
+    </div>
+    <div class="card-detail-actions">
+      <button id="cardDetailPickBtn" class="btn-primary">选择此卡</button>
+      <button id="cardDetailCloseBtn" class="btn-secondary">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="room.js?v=3"></script>
+</body>
+</html>
