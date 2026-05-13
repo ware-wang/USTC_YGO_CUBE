@@ -62,6 +62,7 @@ async function handleCreate() {
     packsPerPlayer: parseInt(el('packsPerPlayer').value),
     cardsPerPack: parseInt(el('cardsPerPack').value),
     password: password || undefined,
+    testMode: el('testMode').checked,
   });
   if (data.error) return showError(data.error);
   redirectToRoom(data.roomId, name, password);

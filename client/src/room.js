@@ -3,6 +3,8 @@
  * Loaded from lobby with ?roomId=xxx&name=xxx&password=xxx (optional)
  */
 import { wsClient } from './ws/client.js';
+import { processEvents, setPrompt, getField, createFieldState } from './battle.js';
+import { renderField } from './battle-field.js';
 
 /* ======================== CONSTANTS ======================== */
 const CARD_IMG_BASE = 'https://images.ygoprodeck.com/images/cards/';
@@ -32,12 +34,19 @@ const state = {
     totalPacks: 0, packIndex: 0, currentPack: [], direction: 1,
     timer: null, seconds: 60, phase: 'idle',
     selectedCard: null, selectedCardEl: null, remainingInPack: 0,
+    autoDraft: false,
   },
   results: { main: [], extra: [], side: [], pool: [] },
   cardCache: {},
   /** Set when viewing a card detail — so the "pick" button knows the context */
   detailCard: null,
   detailSource: null, // 'draft' | 'pool'
+  battle: {
+    tables: [],
+    activeTable: null,
+    readyTableId: null,
+    isDueling: false,
+  },
 };
 
 /* ======================== DOM UTILS ======================== */
@@ -237,11 +246,14 @@ function setupHandlers() {
     state.draft.phase = 'idle';
     state.draft.selectedCard = null;
     state.draft.selectedCardEl = null;
+    state.draft.autoDraft = false;
     showView('draft');
     setText('roundInfo', '第 1/' + state.draft.totalPacks + ' 包');
     setText('draftDirection', '');
     clear('packArea');
     hide(el('confirmPickBtn'));
+    hide(el('autoDraftBtn'));
+    hide(el('stopAutoDraftBtn'));
     setText('draftStatus', '准备开始...');
     show(el('draftStatus'));
   });
@@ -259,12 +271,38 @@ function setupHandlers() {
     state.draft.selectedCardEl = null;
     cacheCards(state.draft.currentPack);
 
+    const isTestMode = state.room?.testMode === true;
+
     setText('roundInfo', '第 ' + (state.draft.packIndex+1) + '/' + state.draft.totalPacks + ' 包 (剩' + (state.draft.remainingInPack||0) + '张)');
     setText('draftDirection', state.draft.direction===1 ? '→ 向右传' : '← 向左传');
-    setText('draftStatus', '点击卡牌查看详情并选择');
+    if (state.draft.autoDraft) {
+      setText('draftStatus', '⚡ 自动轮抽中...');
+    } else {
+      setText('draftStatus', '点击卡牌查看详情并选择');
+    }
     hide(el('confirmPickBtn'));
+
+    // Show/hide auto-draft buttons based on test mode
+    if (isTestMode) {
+      if (state.draft.autoDraft) {
+        hide(el('autoDraftBtn'));
+        show(el('stopAutoDraftBtn'));
+      } else {
+        show(el('autoDraftBtn'));
+        hide(el('stopAutoDraftBtn'));
+      }
+    } else {
+      hide(el('autoDraftBtn'));
+      hide(el('stopAutoDraftBtn'));
+    }
+
     renderPack();
     startTimer();
+
+    // Auto-pick if auto-draft is on
+    if (state.draft.autoDraft) {
+      setTimeout(() => autoPickOne(), 300);
+    }
   });
 
   wsClient.on('pick_result', (msg) => {
@@ -310,6 +348,9 @@ function setupHandlers() {
   wsClient.on('draft_complete', (msg) => {
     stopTimer();
     state.draft.phase = 'done';
+    state.draft.autoDraft = false;
+    hide(el('autoDraftBtn'));
+    hide(el('stopAutoDraftBtn'));
     const myPool = msg.payload.pools[state.playerId];
     if (myPool) {
       cacheCards(myPool.cards || []);
@@ -317,6 +358,10 @@ function setupHandlers() {
       state.results.main = [];
       state.results.extra = [];
       state.results.side = [];
+    }
+    // Store tables for battle lobby
+    if (msg.payload.tables) {
+      state.battle.tables = msg.payload.tables;
     }
     initResults();
     showView('results');
@@ -337,6 +382,77 @@ function setupHandlers() {
       state.draft.phase = 'choosing';
       setText('draftStatus', '确认失败，请重新选择');
     }
+  });
+
+  // ═══ Duel / Battle handlers ═══
+
+  wsClient.on('battle_tables_ready', (msg) => {
+    state.battle.tables = msg.payload.tables;
+    renderBattleTables();
+    // Do NOT auto-switch view — each player enters battle lobby on their own
+  });
+
+  wsClient.on('duel_table_joined', (msg) => {
+    const t = msg.payload;
+    state.battle.activeTable = t;
+    updateTableFromServer(t);
+    renderBattleTables();
+  });
+
+  wsClient.on('duel_table_update', (msg) => {
+    const t = msg.payload;
+    updateTableFromServer(t);
+    renderBattleTables();
+
+    // If mid-duel, update field
+    if (state.battle.isDueling && state.battle.activeTable?.id === t.id) {
+      if (t.events?.length) {
+        processEvents(t.events);
+      }
+      if (t.lastPrompt) {
+        setPrompt(t.lastPrompt);
+        processEvents([]); // reprocess hand from prompt
+      }
+      renderField();
+    }
+  });
+
+  wsClient.on('duel_both_ready', (msg) => {
+    alert('双方卡组已提交！点击"开始对战"按钮。');
+  });
+
+  wsClient.on('duel_started', (msg) => {
+    const t = msg.payload;
+    state.battle.activeTable = t;
+    updateTableFromServer(t);
+    createFieldState();
+    Object.assign(getField(), createFieldState());
+
+    if (t.events?.length) {
+      processEvents(t.events);
+    }
+    if (t.lastPrompt) {
+      setPrompt(t.lastPrompt);
+      processEvents([]);
+    }
+    state.battle.isDueling = true;
+    showView('duel');
+    renderField();
+
+    setText('duelInfo', '对战桌 ' + t.id + ' — ' +
+      (t.seats[0]?.id || '?') + ' vs ' + (t.seats[1]?.id || '?'));
+  });
+
+  wsClient.on('duel_deck_submitted', (msg) => {
+    alert('卡组已提交！' + (msg.payload.bothReady ? '双方就绪。' : '等待对手。'));
+  });
+
+  // Global duel action handler
+  document.addEventListener('duel-action', (e) => {
+    const { value } = e.detail;
+    const tableId = state.battle.activeTable?.id;
+    if (!tableId || !state.battle.isDueling) return;
+    wsSend('battle_respond', { tableId, intValue: value });
   });
 }
 
@@ -565,6 +681,35 @@ function autoPick() {
   handleConfirmPick();
 }
 
+/** Pick a random card and confirm immediately (for auto-draft mode) */
+function autoPickOne() {
+  if (!state.draft.autoDraft) return;
+  if (state.draft.phase !== 'choosing') return;
+  const cards = state.draft.currentPack;
+  if (cards.length === 0) return;
+
+  const idx = Math.floor(Math.random() * cards.length);
+  state.draft.selectedCard = cards[idx];
+  state.draft.selectedCardEl = document.querySelector('#packArea .card-item[data-id="' + cards[idx].id + '"]');
+  handleConfirmPick();
+}
+
+function startAutoDraft() {
+  state.draft.autoDraft = true;
+  hide(el('autoDraftBtn'));
+  show(el('stopAutoDraftBtn'));
+  setText('draftStatus', '⚡ 自动轮抽中...');
+  // Immediately pick current pack
+  autoPickOne();
+}
+
+function stopAutoDraft() {
+  state.draft.autoDraft = false;
+  show(el('autoDraftBtn'));
+  hide(el('stopAutoDraftBtn'));
+  setText('draftStatus', '点击卡牌查看详情并选择');
+}
+
 /* ======================== ZONE HELPERS ======================== */
 function getZoneList(key) {
   const map = {
@@ -663,7 +808,10 @@ function buildYdk() {
 }
 
 function handleExportYdk() {
-  setText('ydkContent', buildYdk());
+  const content = buildYdk();
+  setText('ydkContent', content);
+  // Store for potential copy into battle deck input
+  window._lastYdk = content;
   show(el('ydkModal'));
 }
 
@@ -682,11 +830,148 @@ function handleDownloadYdk() {
   URL.revokeObjectURL(a.href);
 }
 
+/* ======================== BATTLE LOBBY & DUEL ======================== */
+
+function updateTableFromServer(t) {
+  if (!t) return;
+  // Normalize seats from server: may be [{id:"str"},...] or ["str",...] or [null,...]
+  if (t.seats) t.seats = t.seats.map(s => (s && s.id) ? s.id : null);
+  const idx = state.battle.tables.findIndex(bt => bt.id === t.id);
+  if (idx >= 0) state.battle.tables[idx] = t;
+  else state.battle.tables.push(t);
+}
+
+function renderBattleTables() {
+  const container = el('battleTables');
+  if (!container) return;
+  clear(container);
+
+  if (!state.battle.tables.length) {
+    container.innerHTML = '<p style="text-align:center;color:var(--text-dim)">没有对战桌</p>';
+    return;
+  }
+
+  // Build name lookup from room players
+  const playerNames = {};
+  if (state.room?.players) {
+    for (const p of state.room.players) playerNames[p.id] = p.name;
+  }
+
+  for (const t of state.battle.tables) {
+    const card = document.createElement('div');
+    card.className = 'battle-table-card ' + t.state;
+    const seats = [];
+    for (let i = 0; i < 2; i++) {
+      const pid = t.seats[i];  // normalized to string|null by updateTableFromServer
+      const isMe = pid === state.playerId;
+      const display = pid ? (playerNames[pid] || pid.slice(0, 8)) : '';
+      seats.push(pid
+        ? `<div class="bt-seat filled ${isMe ? 'you' : ''}">玩家${i+1}: ${display}${isMe ? ' (你)' : ''}</div>`
+        : `<div class="bt-seat empty">玩家${i+1}: 空位</div>`);
+    }
+
+    const mySeat = t.seats.indexOf(state.playerId);
+    const filledSeats = t.seats.filter(s => s).length;
+
+    card.innerHTML = `
+      <h4>对战桌 ${t.id}</h4>
+      ${seats.join('')}
+      <div style="margin-top:8px;font-size:0.75rem;color:var(--text-dim)">
+        ${t.state === 'waiting' ? (filledSeats === 2 ? '双方就座，请提交卡组' : '等待玩家加入 (' + filledSeats + '/2)') : t.state === 'ready' ? '双方就绪，可以开始' : t.state === 'dueling' ? '对战中' : '已结束'}
+      </div>
+    `;
+
+    // Join button
+    if (t.state === 'waiting' && mySeat < 0) {
+      // Find empty seat
+      for (let i = 0; i < 2; i++) {
+        if (!t.seats[i]) {
+          const btn = document.createElement('button');
+          btn.className = 'btn-primary btn-sm';
+          btn.style.marginTop = '8px';
+          btn.textContent = '加入座位 ' + (i + 1);
+          btn.onclick = () => {
+            wsSend('battle_join_table', { tableId: t.id, seatIndex: i });
+          };
+          card.appendChild(btn);
+          break;
+        }
+      }
+    }
+
+    // Submit deck / start duel
+    if (t.state === 'waiting' && mySeat >= 0) {
+      state.battle.readyTableId = t.id;
+      // Show submit area
+      show(el('deckSubmitArea'));
+      // Update hint based on room setting
+      const checkDeckSize = state.room?.checkDeckSize !== false;
+      setText('submitHint', checkDeckSize
+        ? '主卡组40-60张 · 额外0-15张'
+        : '测试模式 — 无卡组数量限制');
+    }
+
+    if (t.state === 'ready' && mySeat === 0) {
+      const btn = document.createElement('button');
+      btn.className = 'btn-primary btn-sm';
+      btn.style.marginTop = '8px';
+      btn.textContent = '开始对战';
+      btn.onclick = () => wsSend('battle_start', { tableId: t.id });
+      card.appendChild(btn);
+    }
+
+    if (t.state === 'dueling') {
+      const btn = document.createElement('button');
+      btn.className = 'btn-primary btn-sm';
+      btn.style.marginTop = '8px';
+      btn.textContent = '观战 / 入场';
+      btn.onclick = () => {
+        state.battle.activeTable = t;
+        state.battle.isDueling = true;
+        createFieldState();
+        Object.assign(getField(), createFieldState());
+        wsSend('battle_get_state', { tableId: t.id });
+        showView('duel');
+        setText('duelInfo', '对战桌 ' + t.id);
+      };
+      card.appendChild(btn);
+    }
+
+    container.appendChild(card);
+  }
+}
+
+function handleSubmitDeck(ydkContent) {
+  const tableId = state.battle.activeTable?.id || state.battle.readyTableId;
+  if (!tableId) return alert('请先加入对战桌');
+  // If no YDK pasted, build from visual deck editor (main/extra/side)
+  if (!ydkContent?.trim()) ydkContent = buildYdk();
+  if (!ydkContent?.trim()) return alert('卡组为空');
+  wsSend('battle_submit_deck', { tableId, ydkContent });
+}
+
+function showBattleLobby() {
+  // Tables already exist from draft_complete — just render them
+  renderBattleTables();
+  showView('battleLobby');
+}
+
+function backToResults() {
+  showView('results');
+  renderPool();
+  renderDeckZone('mainDeck', state.results.main);
+  renderDeckZone('extraDeck', state.results.extra);
+  renderDeckZone('sideDeck', state.results.side);
+  updateCounts();
+}
+
 /* ======================== INIT ======================== */
 function bindEvents() {
   el('startBtn')?.addEventListener('click', handleStartDraft);
   el('leaveBtn')?.addEventListener('click', handleLeaveRoom);
   el('confirmPickBtn')?.addEventListener('click', handleConfirmPick);
+  el('autoDraftBtn')?.addEventListener('click', startAutoDraft);
+  el('stopAutoDraftBtn')?.addEventListener('click', stopAutoDraft);
   el('exportYdkBtn')?.addEventListener('click', handleExportYdk);
   el('backToLobbyBtn')?.addEventListener('click', handleLeaveRoom);
   el('copyYdkBtn')?.addEventListener('click', handleCopyYdk);
@@ -703,6 +988,39 @@ function bindEvents() {
   el('cardDetailOverlay')?.addEventListener('click', (e) => {
     if (e.target === el('cardDetailOverlay')) closeCardDetail();
   });
+
+  // Battle lobby
+  el('submitDeckBtn')?.addEventListener('click', () => {
+    handleSubmitDeck(el('ydkInput')?.value);
+  });
+  el('useBuilderDeckBtn')?.addEventListener('click', () => {
+    // Fill YDK textarea from visual deck builder
+    const ydk = buildYdk();
+    if (el('ydkInput')) el('ydkInput').value = ydk;
+    handleSubmitDeck(ydk);
+  });
+  el('cancelBattleBtn')?.addEventListener('click', () => {
+    hide(el('deckSubmitArea'));
+    state.battle.readyTableId = null;
+  });
+  el('backToResultsBtn')?.addEventListener('click', backToResults);
+  el('duelBackBtn')?.addEventListener('click', () => {
+    state.battle.isDueling = false;
+    showView('battleLobby');
+    renderBattleTables();
+  });
+
+  // "Go to battle" button in results
+  const battleBtn = el('goBattleBtn');
+  // Add a "对战" button after export button if not present
+  if (!battleBtn && el('deckActions')) {
+    const btn = document.createElement('button');
+    btn.id = 'goBattleBtn';
+    btn.className = 'btn-primary btn-large';
+    btn.textContent = '进入对战';
+    btn.addEventListener('click', showBattleLobby);
+    el('deckActions').appendChild(btn);
+  }
 
   const dropSetup = (zoneId, deckKey) => {
     const zone = el(zoneId);

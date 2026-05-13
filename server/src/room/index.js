@@ -8,7 +8,7 @@ export class RoomManager {
     this.rooms = new Map();  // roomId → Room
   }
 
-  createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password) {
+  createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode) {
     const id = uuid().slice(0, 8);
     const draft = new DraftEngine(cubeCardIds);
     const room = {
@@ -19,6 +19,8 @@ export class RoomManager {
       maxPlayers,
       packsPerPlayer,
       cardsPerPack,
+      testMode: testMode === true,
+      checkDeckSize: testMode !== true,  // test mode disables deck validation
       draft,
       state: DRAFT_STATES.IDLE,
       chat: [],  // Array<{name, text, time}>
@@ -146,6 +148,8 @@ export class RoomManager {
       id: room.id,
       cubeName: room.cubeName,
       hasPassword: !!room.password,
+      checkDeckSize: room.checkDeckSize,
+      testMode: room.testMode,
       players: room.players.map(p => ({ id: p.id, name: p.name, seatIndex: p.seatIndex })),
       maxPlayers: room.maxPlayers,
       packsPerPlayer: room.packsPerPlayer,

@@ -1,0 +1,351 @@
+/**
+ * duel-runner-final: production bridge to ygopro-core
+ *
+ * Message format follows ygopro-core playerop.cpp exactly.
+ * Response: value & 0xffff = command type, value >> 16 = card index.
+ *   t=0 summon, 1 spsum, 2 repos, 3 mset, 4 sset, 5 effect, 6 BP, 7 EP, 8 shuffle
+ */
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <unistd.h>
+
+extern "C" {
+#include "lua.h"
+#include "lualib.h"
+#include "lauxlib.h"
+}
+#include "ocgapi.h"
+#include "common.h"
+#include "card_data.h"
+
+static std::string SCRIPT_DIR = "../ygopro/script";
+static const char* DB_PATH = nullptr;
+static std::vector<card_data> dbCache;
+
+static byte* script_reader_cb(const char* name, int* len) {
+    std::string path = SCRIPT_DIR + "/" + name;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return nullptr;
+    fseek(f, 0, SEEK_END);
+    *len = (int)ftell(f);
+    fseek(f, 0, SEEK_SET);
+    byte* buf = new byte[*len];
+    fread(buf, 1, *len, f);
+    fclose(f);
+    return buf;
+}
+
+static uint32_t card_reader_cb(uint32_t code, card_data* d) {
+    // Load DB once lazily
+    if (dbCache.empty() && DB_PATH) {
+        FILE* db = fopen(DB_PATH, "rb");
+        if (db) {
+            card_data e;
+            while (fread(&e, sizeof(card_data), 1, db) == 1)
+                dbCache.push_back(e);
+            fclose(db);
+        }
+    }
+    if (d) {
+        // Linear search (ok for up to ~12k entries)
+        for (auto& e : dbCache)
+            if (e.code == code) { *d = e; return code; }
+        // Default: Level 4 Normal Monster
+        memset(d, 0, sizeof(card_data));
+        d->code = code; d->level = 4;
+        d->attribute = 0x01; d->race = 0x01;
+        d->attack = 1800; d->defense = 1200;
+        d->type = TYPE_NORMAL | TYPE_MONSTER;
+        return code;
+    }
+    return 0;
+}
+
+static bool is_select(int t) { return t >= MSG_SELECT_BATTLECMD && t <= MSG_SELECT_DISFIELD; }
+static bool is_broadcast(int t) {
+    return t == MSG_HINT || t == MSG_NEW_TURN || t == MSG_NEW_PHASE ||
+           t == MSG_DRAW || t == MSG_SHUFFLE_DECK || t == MSG_SHUFFLE_HAND ||
+           t == MSG_MOVE || t == MSG_SUMMONING || t == MSG_SPSUMMONING ||
+           t == MSG_FLIPSUMMONING || t == MSG_POS_CHANGE || t == MSG_SET ||
+           t == MSG_CHAINED || t == MSG_CHAIN_END || t == MSG_DAMAGE ||
+           t == MSG_RECOVER || t == MSG_LPUPDATE || t == MSG_EQUIP ||
+           t == MSG_CARD_TARGET || t == MSG_CANCEL_TARGET ||
+           t == MSG_ATTACK || t == MSG_BATTLE || t == MSG_ATTACK_DISABLED ||
+           t == MSG_ADD_COUNTER || t == MSG_REMOVE_COUNTER ||
+           t == MSG_CONFIRM_CARDS;
+}
+
+/* ── Serialise one card entry (7 bytes) ── */
+static void ser_card(uint32_t code, int ctrl, int loc, int seq) {
+    printf("{\"c\":%u,\"r\":%d,\"l\":%d,\"s\":%d}", code, ctrl, loc, seq);
+}
+
+/* ── Serialise the ENTIRE buffer to JSON ── */
+static void ser_msg(byte* buf, int len) {
+    if (len < 1) { printf("null"); return; }
+    int t = buf[0];
+    printf("{\"t\":%d", t);
+
+    switch (t) {
+    case MSG_SELECT_IDLECMD: {
+        int o = 1;
+        int player = buf[o++];
+        printf(",\"p\":%d", player);
+
+        auto readCards = [&]() {
+            int n = buf[o++];
+            printf(",%c:[", "SNCSREBM"[o<10?o-3:0]); // hack: just use "x"
+            for (int i = 0; i < n; i++) {
+                if (i > 0) printf(",");
+                uint32_t code = *(uint32_t*)(buf + o); o += 4;
+                int c = buf[o++], l = buf[o++], s = buf[o++];
+                ser_card(code, c, l, s);
+            }
+            printf("]");
+        };
+
+        printf(",\"summonable\":["); int n = buf[o++];
+        for (int i = 0; i < n; i++) {
+            if (i > 0) printf(",");
+            uint32_t code = *(uint32_t*)(buf + o); o += 4;
+            int c = buf[o++], l = buf[o++], s = buf[o++];
+            ser_card(code, c, l, s);
+        }
+        printf("]");
+
+        printf(",\"spsum\":["); n = buf[o++];
+        for (int i = 0; i < n; i++) {
+            if (i > 0) printf(",");
+            uint32_t code = *(uint32_t*)(buf + o); o += 4;
+            int c = buf[o++], l = buf[o++], s = buf[o++];
+            ser_card(code, c, l, s);
+        }
+        printf("]");
+
+        printf(",\"repos\":["); n = buf[o++];
+        for (int i = 0; i < n; i++) {
+            if (i > 0) printf(",");
+            uint32_t code = *(uint32_t*)(buf + o); o += 4;
+            int c = buf[o++], l = buf[o++], s = buf[o++];
+            ser_card(code, c, l, s);
+        }
+        printf("]");
+
+        printf(",\"mset\":["); n = buf[o++];
+        for (int i = 0; i < n; i++) {
+            if (i > 0) printf(",");
+            uint32_t code = *(uint32_t*)(buf + o); o += 4;
+            int c = buf[o++], l = buf[o++], s = buf[o++];
+            ser_card(code, c, l, s);
+        }
+        printf("]");
+
+        printf(",\"sset\":["); n = buf[o++];
+        for (int i = 0; i < n; i++) {
+            if (i > 0) printf(",");
+            uint32_t code = *(uint32_t*)(buf + o); o += 4;
+            int c = buf[o++], l = buf[o++], s = buf[o++];
+            ser_card(code, c, l, s);
+        }
+        printf("]");
+
+        printf(",\"chains\":["); n = buf[o++];
+        for (int i = 0; i < n; i++) {
+            if (i > 0) printf(",");
+            uint32_t code = *(uint32_t*)(buf + o); o += 4;
+            int c = buf[o++], l = buf[o++], s = buf[o++];
+            uint32_t desc = *(uint32_t*)(buf + o); o += 4;
+            printf("{\"c\":%u,\"r\":%d,\"l\":%d,\"s\":%d,\"desc\":%u}", code, c, l, s, desc);
+        }
+        printf("]");
+
+        printf(",\"bp\":%d", buf[o++]);
+        printf(",\"ep\":%d", buf[o++]);
+        printf(",\"shuffle\":%d", buf[o++]);
+        break;
+    }
+    case MSG_SELECT_BATTLECMD: {
+        int o = 1, p = buf[o++], n = buf[o++];
+        int ac = buf[o++], as = buf[o++];
+        int ad = *(uint32_t*)(buf + o); o += 4;
+        printf(",\"p\":%d,\"cmds\":[", p);
+        for (int i = 0; i < n; i++) { if (i > 0) printf(","); printf("%d", *(uint32_t*)(buf + o)); o += 8; }
+        printf("],\"att\":{\"c\":%d,\"s\":%d,\"d\":%d}", ac, as, ad);
+        int ak = buf[o++]; printf(",\"atk\":[");
+        for (int i = 0; i < ak; i++) { if (i > 0) printf(","); printf("%d", *(uint32_t*)(buf + o)); o += 4; }
+        printf("]"); break;
+    }
+    case MSG_SELECT_CARD:
+    case MSG_SELECT_TRIBUTE: {
+        int o = 1, p = buf[o++], ca = buf[o++], mn = buf[o++], mx = buf[o++], n = buf[o++];
+        printf(",\"p\":%d,\"ca\":%d,\"min\":%d,\"max\":%d,\"cards\":[", p, ca, mn, mx);
+        for (int i = 0; i < n; i++) { if(i>0)printf(","); printf("{\"c\":%d,\"l\":%d,\"s\":%d,\"r\":%d}",*(uint32_t*)(buf+o),*(uint32_t*)(buf+o+4),buf[o+8],buf[o+9]); o+=10; }
+        printf("]"); break;
+    }
+    case MSG_SELECT_CHAIN: {
+        int o = 1, p = buf[o++], n = buf[o++], sp = buf[o++], fd = buf[o++]; o += 8;
+        printf(",\"p\":%d,\"sp\":%d,\"fd\":%d,\"chs\":[",p,sp,fd);
+        for (int i=0;i<n;i++) { if(i>0)printf(","); printf("{\"f\":%d,\"c\":%d,\"l\":%d,\"s\":%d,\"r\":%d,\"d\":%d}",*(uint32_t*)(buf+o),*(uint32_t*)(buf+o+4),*(uint32_t*)(buf+o+8),buf[o+12],buf[o+13],*(uint32_t*)(buf+o+14)); o+=18; }
+        printf("]"); break;
+    }
+    case MSG_SELECT_EFFECTYN: { int o=1; printf(",\"p\":%d,\"c\":%d,\"s\":%d,\"r\":%d,\"d\":%d",buf[o++],*(uint32_t*)(buf+o),buf[o+4],buf[o+5],*(uint32_t*)(buf+o+1)); break; }
+    case MSG_SELECT_YESNO: printf(",\"p\":%d,\"d\":%d",buf[1],*(uint32_t*)(buf+2)); break;
+    case MSG_SELECT_OPTION: {
+        int o = 1, p = buf[o++], n = buf[o++]; printf(",\"p\":%d,\"opts\":[", p);
+        for (int i=0;i<n;i++) { if(i>0)printf(","); printf("%d",*(uint32_t*)(buf+o)); o+=4; }
+        printf("]"); break;
+    }
+    case MSG_SELECT_POSITION: printf(",\"p\":%d,\"c\":%d,\"pos\":%d",buf[1],*(uint32_t*)(buf+2),buf[6]); break;
+    case MSG_SELECT_PLACE: printf(",\"p\":%d,\"cnt\":%d,\"flag\":%d",buf[1],buf[2],*(uint32_t*)(buf+3)); break;
+    case MSG_WIN: printf(",\"p\":%d,\"r\":%d",buf[1],buf[2]); break;
+    case MSG_HINT: { int o=1; printf(",\"tp\":%d,\"ht\":%d,\"v\":%d",buf[o],buf[o+1],*(uint32_t*)(buf+o+1)); break; }
+    case MSG_NEW_TURN: printf(",\"p\":%d", buf[1]); break;
+    case MSG_NEW_PHASE: printf(",\"phase\":%d", *(uint16_t*)(buf+1)); break;
+    case MSG_MOVE: {
+        int o=1; printf(",\"c\":%d,\"pc\":%d,\"cc\":%d,\"pl\":%d,\"cl\":%d,\"ps\":%d,\"cs\":%d,\"pp\":%d,\"cp\":%d,\"r\":%d",
+            *(uint32_t*)(buf+o),buf[o+4],buf[o+5],buf[o+6],buf[o+7],buf[o+8],buf[o+9],*(uint32_t*)(buf+o+10),*(uint32_t*)(buf+o+14),*(uint32_t*)(buf+o+18)); break;
+    }
+    case MSG_CONFIRM_CARDS:
+    case MSG_DRAW: {
+        int o = 1, p = buf[o++], n = buf[o++];
+        printf(",\"p\":%d,\"cards\":[", p);
+        for (int i=0;i<n;i++) { if(i>0)printf(","); printf("%d",*(uint32_t*)(buf+o)); o+=4; }
+        printf("]"); break;
+    }
+    case MSG_SHUFFLE_DECK: printf(",\"p\":%d", buf[1]); break;
+    case MSG_SHUFFLE_HAND: { int o=1,p=buf[o++],n=buf[o++]; printf(",\"p\":%d,\"cards\":[",p); for(int i=0;i<n;i++){if(i>0)printf(",");printf("%d",*(uint32_t*)(buf+o));o+=4;} printf("]"); break; }
+    case MSG_CHAINED: printf(",\"c\":%d", buf[1]); break;
+    case MSG_CHAIN_END: break;
+    case MSG_SUMMONING: { int o=1; printf(",\"c\":%d,\"cc\":%d,\"cl\":%d,\"cs\":%d,\"cp\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],*(uint32_t*)(buf+o+4)); break; }
+    case MSG_SPSUMMONING: { int o=1; printf(",\"c\":%d,\"cc\":%d,\"cl\":%d,\"cs\":%d,\"cp\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],*(uint32_t*)(buf+o+4)); break; }
+    case MSG_FLIPSUMMONING: { int o=1; printf(",\"c\":%d,\"cc\":%d,\"cl\":%d,\"cs\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3]); break; }
+    case MSG_POS_CHANGE: { int o=1; printf(",\"c\":%d,\"cc\":%d,\"cl\":%d,\"cs\":%d,\"pp\":%d,\"cp\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],*(uint32_t*)(buf+o+4),*(uint32_t*)(buf+o+8)); break; }
+    case MSG_SET: { int o=1; printf(",\"c\":%d,\"cc\":%d,\"cl\":%d,\"cs\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3]); break; }
+    case MSG_DAMAGE: { int o=1; printf(",\"p\":%d,\"v\":%d",buf[o],*(uint32_t*)(buf+o+1)); break; }
+    case MSG_RECOVER: { int o=1; printf(",\"p\":%d,\"v\":%d",buf[o],*(uint32_t*)(buf+o+1)); break; }
+    case MSG_LPUPDATE: { int o=1; printf(",\"p\":%d,\"v\":%d",buf[o],*(uint32_t*)(buf+o+1)); break; }
+    case MSG_EQUIP: { int o=1; printf(",\"c1\":%d,\"cl1\":%d,\"cs1\":%d,\"c2\":%d,\"cl2\":%d,\"cs2\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],buf[o+4],buf[o+5]); break; }
+    case MSG_CARD_TARGET: { int o=1; printf(",\"c1\":%d,\"cl1\":%d,\"cs1\":%d,\"c2\":%d,\"cl2\":%d,\"cs2\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],buf[o+4],buf[o+5]); break; }
+    case MSG_CANCEL_TARGET: { int o=1; printf(",\"c1\":%d,\"cl1\":%d,\"cs1\":%d,\"c2\":%d,\"cl2\":%d,\"cs2\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],buf[o+4],buf[o+5]); break; }
+    case MSG_ATTACK: { int o=1; printf(",\"ac\":%d,\"al\":%d,\"as\":%d,\"tc\":%d,\"tl\":%d,\"ts\":%d",buf[o],buf[o+1],buf[o+2],buf[o+3],buf[o+4],buf[o+5]); break; }
+    case MSG_BATTLE: { int o=1; printf(",\"ac\":%d,\"al\":%d,\"as\":%d,\"ap\":%d,\"tc\":%d,\"tl\":%d,\"ts\":%d,\"tp\":%d,\"d\":%d",buf[o],buf[o+1],buf[o+2],*(uint32_t*)(buf+o+3),buf[o+7],buf[o+8],buf[o+9],*(uint32_t*)(buf+o+10),*(uint32_t*)(buf+o+14)); break; }
+    case MSG_ATTACK_DISABLED: break;
+    case MSG_ADD_COUNTER: printf(",\"tp\":%d,\"ht\":%d,\"cl\":%d,\"cs\":%d,\"v\":%d",buf[1],buf[2],buf[3],buf[4],*(uint32_t*)(buf+5)); break;
+    case MSG_REMOVE_COUNTER: printf(",\"tp\":%d,\"ht\":%d,\"cl\":%d,\"cs\":%d,\"v\":%d",buf[1],buf[2],buf[3],buf[4],*(uint32_t*)(buf+5)); break;
+    default: break;
+    }
+    printf("}");
+}
+
+/* ── Process until real SELECT prompt or end ── */
+static void proc(intptr_t pd, byte* mb, int retryVal = 0) {
+    for (int lc = 0; lc < 200; lc++) {
+        uint32_t r = process(pd);
+        int len = get_message(pd, mb);
+
+        if (len < 1 && r == 0) { printf("ok\n"); return; }
+
+        if (r & PROCESSOR_END) {
+            if (len >= 1) { printf("msg "); ser_msg(mb, len); printf("\n"); }
+            printf("end\n"); return;
+        }
+
+        if (len >= 1) {
+            int mt = mb[0];
+            if (is_select(mt)) {
+                printf("waiting ");
+                ser_msg(mb, len);
+                printf("\n");
+                return;
+            }
+            if (is_broadcast(mt)) {
+                printf("msg ");
+                ser_msg(mb, len);
+                printf("\n");
+                // Auto-respond for broadcast messages
+                if (mt != MSG_WIN) {
+                    set_responsei(pd, 0);
+                    continue;
+                }
+            }
+            // Unknown message type: respond 0 and continue
+            set_responsei(pd, 0);
+            continue;
+        }
+
+        // MSG_RETRY (len=1): re-use the retry value and continue
+        if (len == 1 && mb[0] == MSG_RETRY) {
+            set_responsei(pd, retryVal);
+            continue;
+        }
+        set_responsei(pd, 0);
+        continue;
+    }
+    printf("error max_loops\n");
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1) SCRIPT_DIR = argv[1];
+    if (argc > 2) DB_PATH = argv[2];
+    else DB_PATH = "/home/wjl/.openclaw/workspace/cube-draft/server/data/cards.cdb";
+
+    set_script_reader(script_reader_cb);
+    set_card_reader(card_reader_cb);
+
+    intptr_t pd = 0;
+    byte* mb = new byte[0x4000];
+    char lb[0x20000];
+
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    fprintf(stderr, "[runner] Ready %s %s\n", SCRIPT_DIR.c_str(), DB_PATH ? DB_PATH : "");
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
+    while (fgets(lb, sizeof(lb), stdin)) {
+        char* cmd = strtok(lb, " \t\r\n");
+        if (!cmd) continue;
+
+        if (!strcmp(cmd, "create")) {
+            char* s = strtok(nullptr, " \t\r\n");
+            uint32_t seed = s ? (uint32_t)strtoul(s, nullptr, 10) : (uint32_t)time(nullptr);
+            pd = create_duel(seed);
+            printf("ok %ld\n", (long)pd);
+        } else if (!strcmp(cmd, "load_deck")) {
+            int player = atoi(strtok(nullptr, " \t\r\n") ?: "0");
+            int mc = atoi(strtok(nullptr, " \t\r\n") ?: "0");
+            for (int i = 0; i < mc; i++) {
+                char* s = strtok(nullptr, " \t\r\n");
+                if (s) new_card(pd, strtoul(s, nullptr, 10), player, player, LOCATION_DECK, 0, 0);
+            }
+            int ec = atoi(strtok(nullptr, " \t\r\n") ?: "0");
+            for (int i = 0; i < ec; i++) {
+                char* s = strtok(nullptr, " \t\r\n");
+                if (s) new_card(pd, strtoul(s, nullptr, 10), player, player, LOCATION_EXTRA, 0, 0);
+            }
+            printf("ok\n");
+        } else if (!strcmp(cmd, "start")) {
+            int lp = 8000, sc = 5, dc = 1;
+            char *a = strtok(nullptr, " \t\r\n"), *b = strtok(nullptr, " \t\r\n"), *c = strtok(nullptr, " \t\r\n");
+            if (a) lp = atoi(a); if (b) sc = atoi(b); if (c) dc = atoi(c);
+            set_player_info(pd, 0, lp, sc, dc);
+            set_player_info(pd, 1, lp, sc, dc);
+            start_duel(pd, DUEL_PSEUDO_SHUFFLE);
+            proc(pd, mb, 0);
+        } else if (!strcmp(cmd, "respond")) {
+            int val = atoi(strtok(nullptr, " \t\r\n") ?: "0");
+            set_responsei(pd, val);
+            proc(pd, mb, val);
+        } else if (!strcmp(cmd, "end")) {
+            if (pd) { end_duel(pd); pd = 0; }
+            printf("ok\n");
+        } else if (!strcmp(cmd, "quit")) {
+            if (pd) end_duel(pd);
+            break;
+        } else printf("error unknown\n");
+    }
+    delete[] mb;
+    if (pd) end_duel(pd);
+    return 0;
+}
