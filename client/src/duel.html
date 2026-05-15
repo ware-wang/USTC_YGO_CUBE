@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>对战 - Cube Draft</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="duel.css">
+</head>
+<body>
+  <div id="duel-app">
+    <!-- Top bar -->
+    <header id="duel-header">
+      <span id="duel-info">对战房间: <span id="duel-session-id">-</span></span>
+      <div id="duel-phase-bar">
+        <button class="phase-btn" data-phase="0">DP</button>
+        <button class="phase-btn" data-phase="1">SP</button>
+        <button class="phase-btn" data-phase="2">M1</button>
+        <button class="phase-btn" data-phase="3">BP</button>
+        <button class="phase-btn" data-phase="4">M2</button>
+        <button class="phase-btn" data-phase="5">EP</button>
+      </div>
+      <div id="duel-actions">
+        <button id="btn-surrender" class="btn btn-danger">投降</button>
+        <button id="btn-leave" class="btn btn-secondary">离开</button>
+      </div>
+    </header>
+
+    <!-- Opponent area -->
+    <section id="opponent-area">
+      <div class="player-stats">
+        <span class="player-name" id="opp-name">对手</span>
+        <span class="player-lp">LP: <strong id="opp-lp">8000</strong></span>
+        <span class="player-deck-count">卡组: <span id="opp-deck">0</span></span>
+        <span class="player-grave-count">墓地: <span id="opp-grave">0</span></span>
+        <span class="player-banish-count">除外: <span id="opp-banish">0</span></span>
+        <span class="player-extra-count">额外: <span id="opp-extra">0</span></span>
+      </div>
+      <div class="field-row">
+        <!-- Opponent S/T zones (s5-s1) -->
+        <div class="field-zone st-zone" data-ctrl="1" data-loc="2" data-seq="4">S/T5</div>
+        <div class="field-zone st-zone" data-ctrl="1" data-loc="2" data-seq="3">S/T4</div>
+        <div class="field-zone st-zone" data-ctrl="1" data-loc="2" data-seq="2">S/T3</div>
+        <div class="field-zone st-zone" data-ctrl="1" data-loc="2" data-seq="1">S/T2</div>
+        <div class="field-zone st-zone" data-ctrl="1" data-loc="2" data-seq="0">S/T1</div>
+        <!-- Opponent field zone -->
+        <div class="field-zone field-zone-special" data-ctrl="1" data-loc="5" data-seq="0">场地</div>
+        <!-- Opponent monsters (m5-m1) -->
+        <div class="field-zone mon-zone" data-ctrl="1" data-loc="4" data-seq="4">M5</div>
+        <div class="field-zone mon-zone" data-ctrl="1" data-loc="4" data-seq="3">M4</div>
+        <div class="field-zone mon-zone" data-ctrl="1" data-loc="4" data-seq="2">M3</div>
+        <div class="field-zone mon-zone" data-ctrl="1" data-loc="4" data-seq="1">M2</div>
+        <div class="field-zone mon-zone" data-ctrl="1" data-loc="4" data-seq="0">M1</div>
+      </div>
+    </section>
+
+    <!-- Divider -->
+    <div class="field-divider">
+      <span id="turn-indicator">第 0 回合</span>
+      <span id="chain-indicator" style="display:none">连锁中…</span>
+    </div>
+
+    <!-- My area -->
+    <section id="my-area">
+      <div class="field-row">
+        <!-- My monsters (m1-m5) -->
+        <div class="field-zone mon-zone" data-ctrl="0" data-loc="4" data-seq="0">M1</div>
+        <div class="field-zone mon-zone" data-ctrl="0" data-loc="4" data-seq="1">M2</div>
+        <div class="field-zone mon-zone" data-ctrl="0" data-loc="4" data-seq="2">M3</div>
+        <div class="field-zone mon-zone" data-ctrl="0" data-loc="4" data-seq="3">M4</div>
+        <div class="field-zone mon-zone" data-ctrl="0" data-loc="4" data-seq="4">M5</div>
+        <!-- My field zone -->
+        <div class="field-zone field-zone-special" data-ctrl="0" data-loc="5" data-seq="0">场地</div>
+        <!-- My S/T zones (s1-s5) -->
+        <div class="field-zone st-zone" data-ctrl="0" data-loc="2" data-seq="0">S/T1</div>
+        <div class="field-zone st-zone" data-ctrl="0" data-loc="2" data-seq="1">S/T2</div>
+        <div class="field-zone st-zone" data-ctrl="0" data-loc="2" data-seq="2">S/T3</div>
+        <div class="field-zone st-zone" data-ctrl="0" data-loc="2" data-seq="3">S/T4</div>
+        <div class="field-zone st-zone" data-ctrl="0" data-loc="2" data-seq="4">S/T5</div>
+      </div>
+      <div class="player-stats">
+        <span class="player-name" id="my-name">我</span>
+        <span class="player-lp">LP: <strong id="my-lp">8000</strong></span>
+        <span class="player-deck-count">卡组: <span id="my-deck">0</span></span>
+        <span class="player-grave-count">墓地: <span id="my-grave">0</span></span>
+        <span class="player-banish-count">除外: <span id="my-banish">0</span></span>
+        <span class="player-extra-count">额外: <span id="my-extra">0</span></span>
+      </div>
+    </section>
+
+    <!-- Hand -->
+    <section id="hand-area">
+      <div id="hand-cards"></div>
+    </section>
+
+    <!-- Chat -->
+    <section id="duel-chat">
+      <div id="chat-messages"></div>
+      <input id="chat-input" placeholder="发送消息到对战频道…" maxlength="200">
+    </section>
+  </div>
+
+  <!-- Selector Modal -->
+  <div id="selector-modal" class="modal" style="display:none">
+    <div class="modal-content selector-content">
+      <h3 id="selector-title">请选择</h3>
+      <div id="selector-body"></div>
+      <div class="selector-actions">
+        <button id="selector-cancel" class="btn btn-secondary" style="display:none">取消</button>
+        <button id="selector-confirm" class="btn btn-primary">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card Detail Modal -->
+  <div id="card-detail-modal" class="modal" style="display:none">
+    <div class="modal-content card-detail-content">
+      <button class="modal-close">&times;</button>
+      <img id="card-detail-img" src="" alt="">
+      <div id="card-detail-text"></div>
+    </div>
+  </div>
+
+  <!-- Log overlay -->
+  <div id="duel-log" style="display:none">
+    <div id="duel-log-header"><strong>消息日志</strong> <button id="log-close">&times;</button></div>
+    <div id="duel-log-body"></div>
+  </div>
+
+  <script src="duel.js" type="module"></script>
+</body>
+</html>

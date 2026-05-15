@@ -1,0 +1,488 @@
+/**
+ * ygopro-ws.js — Binary WebSocket endpoint that speaks the YGOPro protocol.
+ *
+ * neos-ts connects here. Each player gets their own WebSocket connection.
+ * When both players for a room are connected and ready, a DuelSession is
+ * created and ocgcore messages are relayed to both clients via STOC_GAME_MSG.
+ */
+
+import { duelBridge } from './index.js';
+import {
+  decodePackets, encodePacket,
+  CTOS_PLAYER_INFO, CTOS_JOIN_GAME, CTOS_UPDATE_DECK,
+  CTOS_HS_READY, CTOS_HS_NOT_READY, CTOS_HS_START,
+  CTOS_RESPONSE, CTOS_SURRENDER, CTOS_CHAT,
+  STOC_JOIN_GAME, STOC_CHAT, STOC_HS_PLAYER_ENTER, STOC_HS_PLAYER_CHANGE,
+  STOC_TYPE_CHANGE, STOC_DUEL_START, STOC_DUEL_END, STOC_GAME_MSG,
+  STOC_ERROR_MSG,
+  parsePlayerInfo, parseJoinGame, parseUpdateDeck, parseResponse,
+  buildStocJoinGame, buildStocTypeChange, buildStocHsPlayerEnter,
+  buildStocHsPlayerChange, buildStocDuelStart, buildStocDuelEnd,
+  buildStocGameMsg, buildStocChat, buildStocErrorMsg,
+} from './protocol-adapter.js';
+
+// ── Room management ───────────────────────────
+
+/** @type {Map<string, PendingRoom>} */
+const pendingRooms = new Map();
+
+/** @type {{ scriptPath: string|null, cardsCdbPath: string|null }} */
+let duelOptions = { scriptPath: null, cardsCdbPath: null };
+
+/**
+ * @typedef {object} PendingPlayer
+ * @property {import('ws').WebSocket} ws
+ * @property {string} name
+ * @property {boolean} ready
+ * @property {{main: number[], side: number[]}|null} deck
+ */
+
+/**
+ * @typedef {object} PendingRoom
+ * @property {string} passWd
+ * @property {PendingPlayer[]} players
+ * @property {{main: number[], extra: number[]}[]|null} preloadedDecks  // if preloaded from cube-draft
+ * @property {object|null} session
+ * @property {string|null} sessionId
+ * @property {{main: number[], extra: number[], side: number[]}[]} clientDecks // decks from neos-ts UPDATE_DECK
+ * @property {boolean} starting  // prevent concurrent startDuel calls
+ */
+
+/**
+ * Get or create a pending room by password.
+ */
+function getOrCreateRoom(passWd) {
+  let room = pendingRooms.get(passWd);
+  if (!room) {
+    room = {
+      passWd,
+      players: [],
+      preloadedDecks: null,
+      session: null,
+      sessionId: null,
+      clientDecks: [],
+      starting: false,
+    };
+    pendingRooms.set(passWd, room);
+  }
+  return room;
+}
+
+/**
+ * Register pre-loaded decks from cube-draft (called before players connect).
+ */
+export function registerPreloadedDecks(passWd, decks) {
+  const room = getOrCreateRoom(passWd);
+  room.preloadedDecks = decks;
+  console.log(`[ygopro-ws] Registered preloaded decks for room "${passWd}"`);
+  return room;
+}
+
+// ── Player connection handler ─────────────────
+
+/**
+ * Handle a new binary WebSocket connection from neos-ts.
+ * @param {import('ws').WebSocket} ws
+ * @param {object} options
+ * @param {string} options.scriptPath
+ * @param {string} options.cardsCdbPath
+ */
+export function handleYgoproConnection(ws, options = {}) {
+  let playerName = '';
+  let playerPosition = -1;
+  let currentRoom = null;
+
+  // Store duel options from server config
+  if (options.scriptPath || options.cardsCdbPath) {
+    duelOptions = { ...duelOptions, ...options };
+  }
+
+  ws.binaryType = 'nodebuffer';
+
+  ws.on('message', async (data) => {
+    try {
+      const packets = decodePackets(data);
+
+      for (const { proto, exData } of packets) {
+        switch (proto) {
+          case CTOS_PLAYER_INFO: {
+            playerName = parsePlayerInfo(exData);
+            console.log(`[ygopro-ws] Player info: ${playerName}`);
+            break;
+          }
+
+          case CTOS_JOIN_GAME: {
+            const { passWd } = parseJoinGame(exData);
+            console.log(`[ygopro-ws] ${playerName} joining room "${passWd}"`);
+
+            currentRoom = getOrCreateRoom(passWd);
+
+            // Assign position
+            if (currentRoom.players.length >= 2) {
+              // Room full → send error and make observer? For now, error
+              ws.send(buildStocErrorMsg('Room is full'));
+              return;
+            }
+            playerPosition = currentRoom.players.length;
+            currentRoom.players.push({
+              ws,
+              name: playerName,
+              ready: false,
+              deck: null,
+            });
+
+            // Send JOIN_GAME confirmation
+            // Get opponent name for the join response
+            const oppName = currentRoom.players.length >= 2
+              ? currentRoom.players[1 - playerPosition]?.name || 'Opponent'
+              : 'Waiting...';
+
+            const joinMsg = playerPosition === 0
+              ? buildStocJoinGame(playerName, oppName)
+              : buildStocJoinGame(oppName, playerName);
+
+            ws.send(joinMsg);
+
+            // Send TYPE_CHANGE (assign seat)
+            const isHost = playerPosition === 0;
+            ws.send(buildStocTypeChange(playerPosition, isHost));
+
+            // Send HS_PLAYER_ENTER for self
+            ws.send(buildStocHsPlayerEnter(playerName, playerPosition));
+
+            // If opponent already connected, send their enter notification
+            if (currentRoom.players.length >= 2) {
+              const otherPlayer = currentRoom.players[1 - playerPosition];
+              if (otherPlayer) {
+                ws.send(buildStocHsPlayerEnter(otherPlayer.name, 1 - playerPosition));
+
+                // Notify opponent about new player
+                otherPlayer.ws.send(buildStocHsPlayerEnter(playerName, playerPosition));
+              }
+            }
+
+            console.log(`[ygopro-ws] Room "${passWd}": ${currentRoom.players.length}/2 players`);
+            break;
+          }
+
+          case CTOS_UPDATE_DECK: {
+            const deck = parseUpdateDeck(exData);
+            if (currentRoom && playerPosition >= 0) {
+              // Store the deck sent by client
+              while (currentRoom.clientDecks.length <= playerPosition) {
+                currentRoom.clientDecks.push(null);
+              }
+              currentRoom.clientDecks[playerPosition] = deck;
+              console.log(`[ygopro-ws] ${playerName} submitted deck: ${deck.main.length} cards`);
+            }
+            break;
+          }
+
+          case CTOS_HS_READY: {
+            if (currentRoom && playerPosition >= 0 && playerPosition < currentRoom.players.length) {
+              const player = currentRoom.players[playerPosition];
+              if (player) player.ready = true;
+
+              // Notify all players about state change
+              for (const p of currentRoom.players) {
+                if (p?.ws) {
+                  p.ws.send(buildStocHsPlayerChange(1, playerPosition)); // 1 = ready
+                }
+              }
+
+              console.log(`[ygopro-ws] ${playerName} is ready in room "${currentRoom.passWd}"`);
+
+              // Check if both players are ready
+              if (currentRoom.players.length >= 2 &&
+                  currentRoom.players[0]?.ready &&
+                  currentRoom.players[1]?.ready) {
+                await startDuel(currentRoom);
+              }
+            }
+            break;
+          }
+
+          case CTOS_HS_NOT_READY: {
+            if (currentRoom && playerPosition >= 0 && playerPosition < currentRoom.players.length) {
+              const player = currentRoom.players[playerPosition];
+              if (player) player.ready = false;
+
+              for (const p of currentRoom.players) {
+                if (p?.ws) {
+                  p.ws.send(buildStocHsPlayerChange(0, playerPosition)); // 0 = not ready
+                }
+              }
+            }
+            break;
+          }
+
+          case CTOS_HS_START: {
+            // Host requested start — check if both ready
+            if (currentRoom && playerPosition === 0) {
+              if (currentRoom.players.length >= 2 &&
+                  currentRoom.players[0]?.ready &&
+                  currentRoom.players[1]?.ready) {
+                await startDuel(currentRoom);
+              }
+            }
+            break;
+          }
+
+          case CTOS_RESPONSE: {
+            // Forward raw response buffer to DuelSession
+            if (currentRoom?.session) {
+              const responseBuf = parseResponse(exData);
+              currentRoom.session.sendResponse(responseBuf);
+            }
+            break;
+          }
+
+          case CTOS_SURRENDER: {
+            if (currentRoom?.session) {
+              currentRoom.session.surrender(playerPosition);
+              for (const p of currentRoom.players) {
+                if (p?.ws) p.ws.send(buildStocDuelEnd());
+              }
+            }
+            break;
+          }
+
+          case CTOS_CHAT: {
+            // Relay chat to other player
+            if (currentRoom) {
+              // Format: 2B type | 2B len | len*2 bytes msg UTF-16LE
+              const otherPos = 1 - playerPosition;
+              const otherPlayer = currentRoom.players[otherPos];
+              if (otherPlayer?.ws && exData.length >= 4) {
+                // Forward raw chat packet directly
+                otherPlayer.ws.send(encodePacket(STOC_CHAT, exData));
+              }
+            }
+            break;
+          }
+
+          default: {
+            console.log(`[ygopro-ws] Unknown CTOS proto: 0x${proto.toString(16)}`);
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[ygopro-ws] Error processing message from ${playerName}:`, err);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`[ygopro-ws] ${playerName} disconnected`);
+
+    if (currentRoom) {
+      // Notify opponent
+      const otherPos = 1 - playerPosition;
+      const otherPlayer = currentRoom.players[otherPos];
+      if (otherPlayer?.ws) {
+        otherPlayer.ws.send(buildStocHsPlayerChange(0, playerPosition));
+        otherPlayer.ws.send(buildStocChat(0, `${playerName} has disconnected`));
+        otherPlayer.ws.send(buildStocDuelEnd());
+      }
+
+      // Clean up session
+      if (currentRoom.session) {
+        currentRoom.session.surrender(playerPosition);
+      }
+
+      // Remove player from room
+      if (playerPosition >= 0 && playerPosition < currentRoom.players.length) {
+        currentRoom.players[playerPosition] = null;
+      }
+
+      // Clean up room if empty
+      const activePlayers = currentRoom.players.filter(Boolean);
+      if (activePlayers.length === 0) {
+        // Keep rooms with preloaded decks so they survive until players join
+        if (currentRoom.preloadedDecks && !currentRoom.session) {
+          // Room has preloaded decks but no active duel yet — keep it
+          return;
+        }
+        pendingRooms.delete(currentRoom.passWd);
+        console.log(`[ygopro-ws] Room "${currentRoom.passWd}" cleaned up`);
+      }
+    }
+  });
+
+  ws.on('error', (err) => {
+    console.error(`[ygopro-ws] WebSocket error for ${playerName}:`, err.message);
+  });
+}
+
+// ── Duel lifecycle ────────────────────────────
+
+/**
+ * Start the duel for a room where both players are ready.
+ */
+async function startDuel(room) {
+  if (room.session || room.starting) {
+    console.log(`[ygopro-ws] Duel already started/starting for room "${room.passWd}"`);
+    return;
+  }
+
+  room.starting = true;
+  console.log(`[ygopro-ws] Starting duel for room "${room.passWd}"`);
+
+  // Determine which decks to use
+  let deck0, deck1;
+
+  if (room.preloadedDecks && room.preloadedDecks.length >= 2) {
+    // Use cube-draft preloaded decks
+    deck0 = room.preloadedDecks[0];
+    deck1 = room.preloadedDecks[1];
+    console.log(`[ygopro-ws] Using preloaded cube-draft decks`);
+  } else if (room.clientDecks.length >= 2 && room.clientDecks[0] && room.clientDecks[1]) {
+    // Use decks submitted by neos-ts clients
+    deck0 = { main: room.clientDecks[0].main, extra: [] };
+    deck1 = { main: room.clientDecks[1].main, extra: [] };
+    console.log(`[ygopro-ws] Using client-submitted decks`);
+  } else {
+    // No decks available
+    for (const p of room.players) {
+      if (p?.ws) p.ws.send(buildStocErrorMsg('No deck data available'));
+    }
+    room.starting = false;
+    return;
+  }
+
+  try {
+    // Create DuelSession FIRST, only send DUEL_START after success
+    const session = await duelBridge.createSession({
+      decks: [deck0, deck1],
+      hostinfo: {
+        start_lp: 8000,
+        start_hand: 5,
+        draw_count: 1,
+        duel_rule: 5, // master rule
+      },
+      options: {
+        scriptPath: duelOptions.scriptPath || null,
+        cardsCdbPath: duelOptions.cardsCdbPath || null,
+        seed: Date.now() % 0xFFFFFFFF,
+      },
+    });
+
+    room.session = session;
+    room.sessionId = session.sessionId;
+
+    // Send DUEL_START to both players AFTER session is ready
+    for (const p of room.players) {
+      if (p?.ws) p.ws.send(buildStocDuelStart());
+    }
+
+    // Hook up events for relay
+    session.on('gameMsg', (msg) => {
+      // msg format: { type: '...', data: { raw: 'base64...', _rawBuf: <Buffer> } }
+      const raw = msg?.data?._rawBuf || msg?.data?.raw;
+      let rawBuf = null;
+      if (Buffer.isBuffer(raw)) {
+        rawBuf = raw;
+      } else if (typeof raw === 'string' && raw) {
+        rawBuf = Buffer.from(raw, 'base64');
+      }
+
+      if (rawBuf && rawBuf.length > 0) {
+        const pkt = buildStocGameMsg(rawBuf);
+        for (const p of room.players) {
+          if (p?.ws && p.ws.readyState === 1) {
+            p.ws.send(pkt);
+          }
+        }
+      }
+    });
+
+    session.on('select', (msg) => {
+      // Select messages also go through STOC_GAME_MSG
+      // Format: { type: 'response'|'retry', data: { raw: 'base64...', _rawBuf: <Buffer> } }
+      const raw = msg?.data?._rawBuf || msg?.data?.raw;
+      let rawBuf = null;
+      if (Buffer.isBuffer(raw)) {
+        rawBuf = raw;
+      } else if (typeof raw === 'string' && raw) {
+        rawBuf = Buffer.from(raw, 'base64');
+      }
+
+      if (rawBuf && rawBuf.length > 0) {
+        const pkt = buildStocGameMsg(rawBuf);
+        for (const p of room.players) {
+          if (p?.ws && p.ws.readyState === 1) {
+            p.ws.send(pkt);
+          }
+        }
+      }
+    });
+
+    session.on('win', (winMsg) => {
+      console.log(`[ygopro-ws] Duel ended, winner: player ${winMsg.player}`);
+      for (const p of room.players) {
+        if (p?.ws) p.ws.send(buildStocDuelEnd());
+      }
+    });
+
+    session.on('done', () => {
+      console.log(`[ygopro-ws] Duel session ${room.sessionId} finished`);
+    });
+
+    session.on('error', (err) => {
+      console.error(`[ygopro-ws] Duel error:`, err.message);
+      for (const p of room.players) {
+        if (p?.ws) p.ws.send(buildStocErrorMsg(`Duel error: ${err.message}`));
+      }
+    });
+
+    // Now we need to modify the DuelSession to emit raw binary for gameMsg/select events
+    // The current implementation parses messages to JSON and emits parsed data.
+    // We need it to also emit the raw binary.
+    // We'll handle this by overriding the advance behavior or modifying DuelSession.
+    // For now, the existing gameMsg events will also be relayed as raw binary through
+    // the `armForRawOutput` patching we'll add.
+
+    console.log(`[ygopro-ws] Duel session ${room.sessionId} created successfully`);
+
+  } catch (err) {
+    console.log(`[ygopro-ws] !!! Failed to start duel: ${err.message}`, err.stack);
+    room.starting = false;
+    room.session = null;
+    for (const p of room.players) {
+      if (p?.ws && p.ws.readyState === 1) p.ws.send(buildStocErrorMsg(`Failed to start duel: ${err.message}`));
+    }
+  }
+}
+
+// ── Cleanup timer ────────────────────────────
+
+// Periodic cleanup of dead rooms (every 5 minutes)
+const CLEANUP_INTERVAL = 5 * 60 * 1000;
+const ROOM_TIMEOUT = 10 * 60 * 1000; // 10 minutes idle
+
+let cleanupTimer = null;
+
+function startCleanup() {
+  if (cleanupTimer) return;
+  cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [passWd, room] of pendingRooms) {
+      if (room.session) continue; // don't clean active duels
+      const allIdle = room.players.every(p => !p || !p.ready);
+      if (allIdle) {
+        // Keep rooms with preloaded decks (even with all-idle players)
+        const activePlayers = room.players.filter(Boolean);
+        if (room.preloadedDecks && activePlayers.length === 0) continue;
+        console.log(`[ygopro-ws] Cleaning up idle room "${passWd}"`);
+        for (const p of room.players) {
+          if (p?.ws && p.ws.readyState === 1) {
+            try { p.ws.close(); } catch (e) { /* ignore */ }
+          }
+        }
+        pendingRooms.delete(passWd);
+      }
+    }
+  }, CLEANUP_INTERVAL);
+}
+
+startCleanup();

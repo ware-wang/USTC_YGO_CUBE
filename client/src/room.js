@@ -3,8 +3,6 @@
  * Loaded from lobby with ?roomId=xxx&name=xxx&password=xxx (optional)
  */
 import { wsClient } from './ws/client.js';
-import { processEvents, setPrompt, getField, createFieldState } from './battle.js';
-import { renderField } from './battle-field.js';
 
 /* ======================== CONSTANTS ======================== */
 const CARD_IMG_BASE = 'https://images.ygoprodeck.com/images/cards/';
@@ -43,9 +41,6 @@ const state = {
   detailSource: null, // 'draft' | 'pool'
   battle: {
     tables: [],
-    activeTable: null,
-    readyTableId: null,
-    isDueling: false,
   },
 };
 
@@ -384,75 +379,29 @@ function setupHandlers() {
     }
   });
 
-  // ═══ Duel / Battle handlers ═══
+  // ═══ Battle table handlers ═══
 
   wsClient.on('battle_tables_ready', (msg) => {
     state.battle.tables = msg.payload.tables;
     renderBattleTables();
-    // Do NOT auto-switch view — each player enters battle lobby on their own
   });
 
   wsClient.on('duel_table_joined', (msg) => {
-    const t = msg.payload;
-    state.battle.activeTable = t;
-    updateTableFromServer(t);
+    updateTableFromServer(msg.payload);
     renderBattleTables();
   });
 
   wsClient.on('duel_table_update', (msg) => {
-    const t = msg.payload;
-    updateTableFromServer(t);
+    updateTableFromServer(msg.payload);
     renderBattleTables();
-
-    // If mid-duel, update field
-    if (state.battle.isDueling && state.battle.activeTable?.id === t.id) {
-      if (t.events?.length) {
-        processEvents(t.events);
-      }
-      if (t.lastPrompt) {
-        setPrompt(t.lastPrompt);
-        processEvents([]); // reprocess hand from prompt
-      }
-      renderField();
-    }
   });
 
   wsClient.on('duel_both_ready', (msg) => {
-    alert('双方卡组已提交！点击"开始对战"按钮。');
+    // Legacy: keep for compatibility
   });
 
-  wsClient.on('duel_started', (msg) => {
-    const t = msg.payload;
-    state.battle.activeTable = t;
-    updateTableFromServer(t);
-    createFieldState();
-    Object.assign(getField(), createFieldState());
-
-    if (t.events?.length) {
-      processEvents(t.events);
-    }
-    if (t.lastPrompt) {
-      setPrompt(t.lastPrompt);
-      processEvents([]);
-    }
-    state.battle.isDueling = true;
-    showView('duel');
-    renderField();
-
-    setText('duelInfo', '对战桌 ' + t.id + ' — ' +
-      (t.seats[0]?.id || '?') + ' vs ' + (t.seats[1]?.id || '?'));
-  });
-
-  wsClient.on('duel_deck_submitted', (msg) => {
-    alert('卡组已提交！' + (msg.payload.bothReady ? '双方就绪。' : '等待对手。'));
-  });
-
-  // Global duel action handler
-  document.addEventListener('duel-action', (e) => {
-    const { value } = e.detail;
-    const tableId = state.battle.activeTable?.id;
-    if (!tableId || !state.battle.isDueling) return;
-    wsSend('battle_respond', { tableId, intValue: value });
+  wsClient.on('duel_launch_neos', (msg) => {
+    handleLaunchNeos(msg.payload);
   });
 }
 
@@ -830,12 +779,10 @@ function handleDownloadYdk() {
   URL.revokeObjectURL(a.href);
 }
 
-/* ======================== BATTLE LOBBY & DUEL ======================== */
+/* ======================== BATTLE LOBBY ======================== */
 
 function updateTableFromServer(t) {
   if (!t) return;
-  // Normalize seats from server: may be [{id:"str"},...] or ["str",...] or [null,...]
-  if (t.seats) t.seats = t.seats.map(s => (s && s.id) ? s.id : null);
   const idx = state.battle.tables.findIndex(bt => bt.id === t.id);
   if (idx >= 0) state.battle.tables[idx] = t;
   else state.battle.tables.push(t);
@@ -851,7 +798,6 @@ function renderBattleTables() {
     return;
   }
 
-  // Build name lookup from room players
   const playerNames = {};
   if (state.room?.players) {
     for (const p of state.room.players) playerNames[p.id] = p.name;
@@ -862,30 +808,35 @@ function renderBattleTables() {
     card.className = 'battle-table-card ' + t.state;
     const seats = [];
     for (let i = 0; i < 2; i++) {
-      const pid = t.seats[i];  // normalized to string|null by updateTableFromServer
+      const pid = typeof t.seats[i] === 'object' ? t.seats[i]?.id : t.seats[i];
       const isMe = pid === state.playerId;
-      const display = pid ? (playerNames[pid] || pid.slice(0, 8)) : '';
+      const display = pid ? (playerNames[pid] || (typeof pid === 'string' ? pid.slice(0, 8) : '')) : '';
       seats.push(pid
         ? `<div class="bt-seat filled ${isMe ? 'you' : ''}">玩家${i+1}: ${display}${isMe ? ' (你)' : ''}</div>`
         : `<div class="bt-seat empty">玩家${i+1}: 空位</div>`);
     }
 
-    const mySeat = t.seats.indexOf(state.playerId);
-    const filledSeats = t.seats.filter(s => s).length;
+    const filledSeats = t.seats.filter(s => {
+      const pid = typeof s === 'object' ? s?.id : s;
+      return !!pid;
+    }).length;
+    const mySeat = t.seats.findIndex(s => {
+      const pid = typeof s === 'object' ? s?.id : s;
+      return pid === state.playerId;
+    });
 
     card.innerHTML = `
       <h4>对战桌 ${t.id}</h4>
       ${seats.join('')}
       <div style="margin-top:8px;font-size:0.75rem;color:var(--text-dim)">
-        ${t.state === 'waiting' ? (filledSeats === 2 ? '双方就座，请提交卡组' : '等待玩家加入 (' + filledSeats + '/2)') : t.state === 'ready' ? '双方就绪，可以开始' : t.state === 'dueling' ? '对战中' : '已结束'}
+        ${t.state === 'waiting' ? (filledSeats === 2 ? '双方就座' : '等待玩家加入 (' + filledSeats + '/2)') : t.state === 'ready' ? '双方就绪' : t.state === 'dueling' ? '对战中' : '已结束'}
       </div>
     `;
 
-    // Join button
     if (t.state === 'waiting' && mySeat < 0) {
-      // Find empty seat
       for (let i = 0; i < 2; i++) {
-        if (!t.seats[i]) {
+        const pid = typeof t.seats[i] === 'object' ? t.seats[i]?.id : t.seats[i];
+        if (!pid) {
           const btn = document.createElement('button');
           btn.className = 'btn-primary btn-sm';
           btn.style.marginTop = '8px';
@@ -899,61 +850,92 @@ function renderBattleTables() {
       }
     }
 
-    // Submit deck / start duel
-    if (t.state === 'waiting' && mySeat >= 0) {
-      state.battle.readyTableId = t.id;
-      // Show submit area
-      show(el('deckSubmitArea'));
-      // Update hint based on room setting
-      const checkDeckSize = state.room?.checkDeckSize !== false;
-      setText('submitHint', checkDeckSize
-        ? '主卡组40-60张 · 额外0-15张'
-        : '测试模式 — 无卡组数量限制');
-    }
+    // YDK submit area for seated players (in waiting state)
+    if ((t.state === 'waiting' || t.state === 'ready') && mySeat >= 0) {
+      const ydkArea = document.createElement('div');
+      ydkArea.style.marginTop = '10px';
+      ydkArea.innerHTML = `
+        <textarea id="ydkInput_${t.id}" placeholder="在此粘贴你的 YDK 卡组..." 
+          style="width:100%;height:60px;font-size:0.75rem;margin-bottom:4px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
+        <button id="submitYdkBtn_${t.id}" class="btn-primary btn-sm">提交卡组 (${t.id})</button>
+      `;
+      card.appendChild(ydkArea);
 
-    if (t.state === 'ready' && mySeat === 0) {
-      const btn = document.createElement('button');
-      btn.className = 'btn-primary btn-sm';
-      btn.style.marginTop = '8px';
-      btn.textContent = '开始对战';
-      btn.onclick = () => wsSend('battle_start', { tableId: t.id });
-      card.appendChild(btn);
-    }
-
-    if (t.state === 'dueling') {
-      const btn = document.createElement('button');
-      btn.className = 'btn-primary btn-sm';
-      btn.style.marginTop = '8px';
-      btn.textContent = '观战 / 入场';
-      btn.onclick = () => {
-        state.battle.activeTable = t;
-        state.battle.isDueling = true;
-        createFieldState();
-        Object.assign(getField(), createFieldState());
-        wsSend('battle_get_state', { tableId: t.id });
-        showView('duel');
-        setText('duelInfo', '对战桌 ' + t.id);
-      };
-      card.appendChild(btn);
+      // Auto-fill from last exported YDK
+      setTimeout(() => {
+        const ta = el(`ydkInput_${t.id}`);
+        const btn = el(`submitYdkBtn_${t.id}`);
+        if (ta && window._lastYdk) ta.value = window._lastYdk;
+        if (btn) btn.onclick = () => {
+          const content = ta?.value?.trim();
+          if (!content) { alert('请先粘贴 YDK 卡组内容'); return; }
+          wsSend('battle_submit_deck', { tableId: t.id, ydkContent: content });
+          if (btn) btn.textContent = '已提交';
+          if (ta) ta.disabled = true;
+        };
+      }, 100);
     }
 
     container.appendChild(card);
   }
 }
 
-function handleSubmitDeck(ydkContent) {
-  const tableId = state.battle.activeTable?.id || state.battle.readyTableId;
-  if (!tableId) return alert('请先加入对战桌');
-  // If no YDK pasted, build from visual deck editor (main/extra/side)
-  if (!ydkContent?.trim()) ydkContent = buildYdk();
-  if (!ydkContent?.trim()) return alert('卡组为空');
-  wsSend('battle_submit_deck', { tableId, ydkContent });
-}
-
 function showBattleLobby() {
-  // Tables already exist from draft_complete — just render them
   renderBattleTables();
   showView('battleLobby');
+}
+
+/**
+ * Handle neos-ts duel launch response from server.
+ * When both players submit YDKs, server auto-creates a ygopro room.
+ * Show the password and link to both players.
+ */
+function handleLaunchNeos(payload) {
+  if (payload.error) {
+    alert('对战启动失败: ' + payload.error);
+    return;
+  }
+
+  const { passWd, neosUrl, players, instructions } = payload;
+
+  // Create or update a launch info panel in the battle lobby
+  let panel = el('neosLaunchPanel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'neosLaunchPanel';
+    panel.className = 'modal';
+    el('battleLobby')?.appendChild(panel);
+  }
+
+  panel.innerHTML = `
+    <div class="modal-content" style="max-width:520px">
+      <h3>🎮 在线对战已就绪!</h3>
+      <div style="background:var(--bg);padding:12px;border-radius:6px;margin:10px 0">
+        <p><strong>房间密码:</strong> <code style="font-size:1.2rem;color:var(--highlight)">${passWd}</code></p>
+        <p><strong>对战双方:</strong> ${(players || []).join(' vs ')}</p>
+      </div>
+      <div style="margin:12px 0">
+        <a href="${neosUrl}" target="_blank" rel="noopener" 
+           style="display:inline-block;padding:10px 20px;background:var(--highlight);color:white;text-decoration:none;border-radius:6px;font-weight:bold">
+          🚀 打开对战客户端
+        </a>
+      </div>
+      <div style="font-size:0.85rem;color:var(--text-dim);margin:8px 0">
+        ${instructions || '打开链接后，点击「自定义房间」卡片，输入昵称和上方房间密码'}
+      </div>
+      <div style="font-size:0.8rem;color:var(--text-dim);margin-top:12px">
+        <strong>步骤:</strong>
+        <ol style="margin:4px 0 0 16px">
+          <li>点击上方按钮打开 neos-ts 对战页面</li>
+          <li>点击页面中的 <em>自定义房间</em> 卡片（齿轮图标）</li>
+          <li>输入玩家名和房间密码 <code>${passWd}</code>，点击「加入房间」</li>
+          <li>等待对手也加入 → 自动开始对战!</li>
+        </ol>
+      </div>
+      <button class="btn-secondary" style="margin-top:12px" onclick="document.getElementById('neosLaunchPanel').classList.add('hidden')">关闭</button>
+    </div>
+  `;
+  panel.classList.remove('hidden');
 }
 
 function backToResults() {
@@ -990,34 +972,15 @@ function bindEvents() {
   });
 
   // Battle lobby
-  el('submitDeckBtn')?.addEventListener('click', () => {
-    handleSubmitDeck(el('ydkInput')?.value);
-  });
-  el('useBuilderDeckBtn')?.addEventListener('click', () => {
-    // Fill YDK textarea from visual deck builder
-    const ydk = buildYdk();
-    if (el('ydkInput')) el('ydkInput').value = ydk;
-    handleSubmitDeck(ydk);
-  });
-  el('cancelBattleBtn')?.addEventListener('click', () => {
-    hide(el('deckSubmitArea'));
-    state.battle.readyTableId = null;
-  });
   el('backToResultsBtn')?.addEventListener('click', backToResults);
-  el('duelBackBtn')?.addEventListener('click', () => {
-    state.battle.isDueling = false;
-    showView('battleLobby');
-    renderBattleTables();
-  });
 
-  // "Go to battle" button in results
+  // "Go to battle" button in results — add after export buttons
   const battleBtn = el('goBattleBtn');
-  // Add a "对战" button after export button if not present
   if (!battleBtn && el('deckActions')) {
     const btn = document.createElement('button');
     btn.id = 'goBattleBtn';
-    btn.className = 'btn-primary btn-large';
-    btn.textContent = '进入对战';
+    btn.className = 'btn-primary';
+    btn.textContent = '进入对战房间';
     btn.addEventListener('click', showBattleLobby);
     el('deckActions').appendChild(btn);
   }

@@ -7,10 +7,16 @@
     "start": "node src/index.js"
   },
   "dependencies": {
+    "better-lock": "^3.2.0",
+    "crypto-random-string": "^5.0.0",
     "express": "^4.21.0",
     "koffi": "^2.16.2",
+    "koishipro-core.js": "^1.4.5",
     "sql.js": "^1.11.0",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "ygopro-cdb-encode": "^1.1.0",
+    "ygopro-deck-encode": "^1.0.16",
+    "ygopro-msg-encode": "^1.2.2"
   }
 }

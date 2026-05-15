@@ -1,37 +1,75 @@
-import { WebSocketServer } from 'ws';
-import { DRAFT_STATES } from '../draft/index.js';
+/**
+ * WebSocket server for Cube Draft.
+ *
+ * Uses manual upgrade handling (noServer mode) because multiple
+ * WebSocketServer instances sharing one HTTP server with 'path'
+ * option causes frame corruption in ws 8.x.
+ */
 
-/** Map ws → { roomId, playerId, playerName } */
+import { WebSocketServer } from 'ws';
+import { parse as parseUrl, fileURLToPath } from 'url';
+import path from 'path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { DRAFT_STATES } from '../draft/index.js';
+import { handleYgoproConnection } from '../duel-bridge/ygopro-ws.js';
+
+/** Map ws → { roomId, playerId, playerName, duelSessionId?, duelPosition? } */
 const clients = new Map();
 
 let duelManagerRef = null;
+let duelBridgeRef = null;
 
-export function createWSServer(httpServer, roomManager, duelManager) {
+export function createWSServer(httpServer, roomManager, duelManager, duelBridge) {
   duelManagerRef = duelManager;
+  duelBridgeRef = duelBridge;
 
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  // ── Manual upgrade routing (noServer mode) ──
+  const jsonWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const ygoproWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
-  wss.on('connection', (ws) => {
+  jsonWss.on('connection', (ws) => {
     console.log('[WS] New connection');
-
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); }
       catch { return; }
       handleMessage(ws, msg, roomManager);
     });
+    ws.on('close', () => { clients.delete(ws); });
+  });
 
-    ws.on('close', () => {
-      clients.delete(ws);
+  ygoproWss.on('connection', (ws) => {
+    console.log('[WS-Duel] New ygopro binary connection');
+    const dataDir = path.join(__dirname, '..', '..', 'data');
+    handleYgoproConnection(ws, {
+      scriptPath: process.env.YGOPRO_SCRIPT_PATH || dataDir,  // fallback to data dir (no scripts but valid path)
+      cardsCdbPath: process.env.YGOPRO_CDB_PATH || dataDir,
     });
   });
 
-  return wss;
+  httpServer.on('upgrade', (request, socket, head) => {
+    const { pathname } = parseUrl(request.url);
+    if (pathname === '/ws') {
+      jsonWss.handleUpgrade(request, socket, head, (ws) => {
+        jsonWss.emit('connection', ws, request);
+      });
+    } else if (pathname === '/ws-duel') {
+      ygoproWss.handleUpgrade(request, socket, head, (ws) => {
+        ygoproWss.emit('connection', ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  return { jsonWss, ygoproWss };
 }
+
+// ── Message routing ──────────────────────────
 
 function handleMessage(ws, msg, roomManager) {
   const { type, payload = {} } = msg;
-
   switch (type) {
     case 'join_room': return handleJoin(ws, payload, roomManager);
     case 'start_draft': return handleStart(ws, payload, roomManager);
@@ -46,6 +84,9 @@ function handleMessage(ws, msg, roomManager) {
     case 'duel_start': return handleDuelStart(ws, payload);
     case 'duel_respond': return handleDuelRespond(ws, payload);
     case 'duel_get_state': return handleDuelGetState(ws, payload);
+    case 'duel_join': return handleDuelNewJoin(ws, payload, roomManager);
+    case 'duel_response': return handleDuelResponse(ws, payload);
+    case 'duel_surrender': return handleDuelSurrender(ws, payload);
     case 'battle_create_tables': return handleBattleCreate(ws, payload, roomManager);
     case 'battle_join_table': return handleDuelJoin(ws, payload);
     case 'battle_submit_deck': return handleDuelSubmit(ws, payload);
@@ -58,7 +99,45 @@ function handleMessage(ws, msg, roomManager) {
   }
 }
 
-/* ==================== ROOM / DRAFT HANDLERS ==================== */
+// ── Utilities ────────────────────────────────
+
+function send(ws, msg) {
+  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+}
+
+function broadcast(roomId, rm, exclude, msg) {
+  for (const [ws, c] of clients) {
+    if (c.roomId === roomId && ws !== exclude && ws.readyState === 1) {
+      ws.send(JSON.stringify(msg));
+    }
+  }
+}
+
+function broadcastDuel(tableId, exclude, msg) {
+  // Broadcast to both players at a duel table
+  const table = duelManagerRef?.getTablePublic?.(tableId);
+  if (!table) return;
+  for (const [ws, c] of clients) {
+    if (c.roomId === table.roomId && ws !== exclude && ws.readyState === 1) {
+      ws.send(JSON.stringify(msg));
+    }
+  }
+}
+
+function findPlayerWs(roomId, playerId) {
+  for (const [ws, c] of clients)
+    if (c.roomId === roomId && c.playerId === playerId && ws.readyState === 1) return ws;
+  return null;
+}
+
+function findClientByPlayer(roomId, playerId) {
+  for (const [ws, c] of clients) {
+    if (c.roomId === roomId && c.playerId === playerId) return c;
+  }
+  return null;
+}
+
+// ── Room / Draft handlers ────────────────────
 
 function handleJoin(ws, { roomId, playerName, password }, rm) {
   const result = rm.addPlayer(roomId, playerName, password || null);
@@ -114,7 +193,6 @@ function handleConfirmPick(ws, { roomId, cardIndex }, rm) {
   if (!result.allConfirmed) return;
 
   if (result.draftComplete) {
-    // Create battle tables
     const tables = duelManagerRef.createBattleTables(room);
     broadcast(roomId, rm, null, { type: 'draft_complete', payload: { pools: room.draft.getPlayerPools(), tables: tables.map(t => ({
       id: t.id, roomId: t.roomId, state: t.state, seats: t.seats,
@@ -170,31 +248,21 @@ function handleLeave(client, rm) {
   rm.removePlayer(client.roomId, client.playerId);
 }
 
+// ── Battle / Duel handlers ───────────────────
+
 function handleBattleCreate(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: 'Room not found' } });
-
-  // Idempotent: if tables already exist for this room, return them
-  const existing = duelManagerRef.getRoomTables(roomId);
-  if (existing.length > 0) {
-    return send(ws, { type: 'battle_tables_ready', payload: { tables: existing } });
-  }
-
   const tables = duelManagerRef.createBattleTables(room);
-  send(ws, { type: 'battle_tables_ready', payload: { tables: tables.map(t => ({
-    id: t.id, roomId: t.roomId, state: t.state, seats: t.seats,
-  })) } });
+  broadcast(roomId, rm, null, { type: 'battle_tables_created', payload: { tables: tables.map(t => ({ id: t.id, roomId: t.roomId, state: t.state, seats: t.seats })) } });
 }
 
-/* ==================== DUEL HANDLERS ==================== */
-
-async function handleDuelJoin(ws, { tableId, seatIndex }) {
+function handleDuelJoin(ws, { tableId, seatIndex }) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
-  const result = duelManagerRef.joinTable(tableId, client.playerId, seatIndex ?? 0);
+  const result = duelManagerRef.joinTable(tableId, client.playerId, seatIndex);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
   const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  send(ws, { type: 'duel_table_joined', payload: pub });
   broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
 }
 
@@ -206,61 +274,94 @@ async function handleDuelSubmit(ws, { tableId, ydkContent }) {
   send(ws, { type: 'duel_deck_submitted', payload: { success: true, bothReady: result.bothReady } });
   const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
   broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+
   if (result.bothReady) {
-    broadcastDuel(tableId, null, { type: 'duel_both_ready', payload: { tableId, message: '双方卡组已提交，可以开始对战！' } });
+    await launchNeosDuel(tableId, client.roomId);
   }
 }
 
-async function handleDuelStart(ws, { tableId }) {
-  const client = clients.get(ws);
-  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
-  const result = await duelManagerRef.startDuel(tableId);
-  if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
-  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  broadcastDuel(tableId, null, { type: 'duel_started', payload: pub });
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+async function launchNeosDuel(tableId, roomId) {
+  const tableDecks = duelManagerRef.getTableDecks(tableId);
+  if (!tableDecks) {
+    console.warn(`[launchNeosDuel] No decks for table ${tableId}`);
+    return;
+  }
+
+  const passWd = `cube_${tableId.replace(/\W/g, '').slice(0, 14)}`;
+
+  try {
+    const { registerPreloadedDecks } = await import('../duel-bridge/ygopro-ws.js');
+    registerPreloadedDecks(passWd, [
+      { main: tableDecks.players[0].deck.main || [], extra: tableDecks.players[0].deck.extra || [] },
+      { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [] },
+    ]);
+
+    const neosUrl = '/neos/match';
+    const p1Name = findClientByPlayer(roomId, tableDecks.players[0].id)?.playerName || 'Player1';
+    const p2Name = findClientByPlayer(roomId, tableDecks.players[1].id)?.playerName || 'Player2';
+
+    console.log(`[launchNeosDuel] Room "${passWd}" created for table ${tableId}`);
+
+    broadcastDuel(tableId, null, {
+      type: 'duel_launch_neos',
+      payload: {
+        passWd,
+        neosUrl,
+        tableId,
+        players: [p1Name, p2Name],
+        instructions: `打开链接后，点击「自定义房间」，输入昵称和密码: ${passWd}`,
+      },
+    });
+  } catch (e) {
+    console.error('[launchNeosDuel] Failed:', e.message);
+    broadcastDuel(tableId, null, {
+      type: 'duel_launch_neos',
+      payload: { error: '启动对战房间失败: ' + e.message },
+    });
+  }
 }
 
-async function handleDuelRespond(ws, { tableId, intValue }) {
+function handleDuelStart(ws, { tableId }) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
-  const result = await duelManagerRef.respond(tableId, client.playerId, intValue ?? 0);
+  const result = duelManagerRef.startDuel(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
-  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+  broadcastDuel(tableId, null, { type: 'duel_started', payload: { tableId, state: result.state } });
+}
+
+function handleDuelRespond(ws, { tableId, response }) {
+  const client = clients.get(ws);
+  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  const result = duelManagerRef.handleResponse(tableId, client.playerId, response);
+  if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 }
 
 function handleDuelGetState(ws, { tableId }) {
   const client = clients.get(ws);
-  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
-  send(ws, { type: 'duel_table_update', payload: duelManagerRef.getTablePublic(tableId, client.playerId) });
+  if (!client) return;
+  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
+  send(ws, { type: 'duel_table_update', payload: pub });
 }
 
-/* ==================== UTILS ==================== */
+// ── New OCG core duel handlers (from duel-bridge) ──
 
-function findPlayerWs(roomId, playerId) {
-  for (const [ws, c] of clients) if (c.roomId === roomId && c.playerId === playerId) return ws;
-  return null;
+function handleDuelNewJoin(ws, { roomId, position }, rm) {
+  const client = clients.get(ws);
+  if (!client) return;
+  client.duelPosition = position;
+  const room = rm.getRoom(roomId);
+  if (!room) return;
+  send(ws, { type: 'duel_joined', payload: { position } });
 }
 
-function broadcast(roomId, rm, excludeWs, msg) {
-  const data = JSON.stringify(msg);
-  for (const [ws, c] of clients) {
-    if (c.roomId === roomId && ws !== excludeWs && ws.readyState === 1) ws.send(data);
-  }
+function handleDuelResponse(ws, { sessionId, response }) {
+  const client = clients.get(ws);
+  if (!client) return;
+  duelBridgeRef.sendResponse(sessionId, client.duelPosition || 0, response);
 }
 
-function broadcastDuel(tableId, excludeWs, msg) {
-  const data = JSON.stringify(msg);
-  const table = duelManagerRef.tables.get(tableId);
-  if (!table) return;
-  // Broadcast to EVERYONE in the room — not just seated players.
-  // Non-seated players need to see table updates so they can pick available seats.
-  for (const [ws, c] of clients) {
-    if (c.roomId === table.roomId && ws !== excludeWs && ws.readyState === 1) ws.send(data);
-  }
-}
-
-function send(ws, msg) {
-  if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+function handleDuelSurrender(ws, { sessionId }) {
+  const client = clients.get(ws);
+  if (!client) return;
+  duelBridgeRef.surrender(sessionId, client.duelPosition || 0);
 }

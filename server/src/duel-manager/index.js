@@ -1,9 +1,8 @@
 /**
- * DuelManager — manages multiple duel instances via spawn(duel-runner).
- * Response encoding: value & 0xffff = command type, value >> 16 = index
+ * DuelManager — manages battle tables.
+ * Creates tables, handles player seating and deck submission.
+ * Actual dueling is handled externally (e.g. ygopro client).
  */
-import { createDuelProcess } from '../duel-bridge/index.js';
-import { cardDB } from '../card-db/index.js';
 import { v4 as uuid } from 'uuid';
 
 export class DuelManager {
@@ -22,9 +21,8 @@ export class DuelManager {
         id: tid, roomId: room.id,
         seats: [null, null], decks: [null, null],
         state: 'waiting', winner: null,
-        duel: null, events: [], lastPrompt: null,
         checkDeckSize: room.checkDeckSize !== false,
-      testMode: room.testMode === true,
+        testMode: room.testMode === true,
       };
       this.tables.set(tid, table);
       tables.push(table);
@@ -58,40 +56,6 @@ export class DuelManager {
     return { success: true, bothReady: both };
   }
 
-  async startDuel(tableId) {
-    const t = this.tables.get(tableId);
-    if (!t) return { error: '对战桌不存在' };
-    if (t.state !== 'ready') return { error: '双方尚未就绪' };
-    try {
-      const dp = await createDuelProcess();
-      await dp.create(Date.now());
-      await dp.loadDeck(0, t.decks[0].main, t.decks[0].extra);
-      await dp.loadDeck(1, t.decks[1].main, t.decks[1].extra);
-      t.duel = dp;
-      t.state = 'dueling';
-      const result = await dp.start(8000, 5, 1);
-      _applyResult(t, result);
-      return { success: true };
-    } catch (err) {
-      console.error('[DuelMgr] startDuel error:', err);
-      return { error: '决斗启动失败: ' + err.message };
-    }
-  }
-
-  async respond(tableId, playerId, value) {
-    const t = this.tables.get(tableId);
-    if (!t) return { error: '对战桌不存在' };
-    if (!t.duel) return { error: '对局未开始' };
-    try {
-      const result = await t.duel.respond(value);
-      _applyResult(t, result);
-      return { success: true };
-    } catch (err) {
-      console.error('[DuelMgr] respond error:', err);
-      return { error: '响应失败: ' + err.message };
-    }
-  }
-
   getTablePublic(tableId, playerId) {
     const t = this.tables.get(tableId);
     if (!t) return null;
@@ -100,8 +64,6 @@ export class DuelManager {
       id: t.id, roomId: t.roomId, state: t.state, winner: t.winner,
       seats: t.seats.map(id => id ? { id } : null),
       mySeat: si >= 0 ? si : -1,
-      events: t.events.slice(-50),
-      lastPrompt: t.lastPrompt ? _enrich(t.lastPrompt) : null,
     };
   }
 
@@ -113,59 +75,28 @@ export class DuelManager {
     return list;
   }
 
+  /**
+   * Get the table's YDK decks and player IDs for neos-ts launch.
+   * Returns null if both decks are not submitted.
+   */
+  getTableDecks(tableId) {
+    const t = this.tables.get(tableId);
+    if (!t || !t.decks || !t.decks[0] || !t.decks[1]) return null;
+    return {
+      players: [
+        { id: t.seats[0], deck: t.decks[0] },
+        { id: t.seats[1], deck: t.decks[1] },
+      ],
+    };
+  }
+
   _cleanup(roomId) {
     for (const [id, t] of this.tables)
-      if (t.roomId === roomId) { if (t.duel) try { t.duel.quit(); } catch {} this.tables.delete(id); }
+      if (t.roomId === roomId) this.tables.delete(id);
   }
 }
 
 /* ── helpers ── */
-
-function _applyResult(table, result) {
-  if (result.events && result.events.length > 0)
-    table.events.push(...result.events);
-
-  if (result.type === 'waiting') {
-    table.lastPrompt = result;
-  } else if (result.type === 'end') {
-    table.state = 'completed';
-    table.lastPrompt = result;
-    if (table.duel) try { table.duel.quit(); } catch {}
-  }
-}
-
-function _enrich(prompt) {
-  if (!prompt || !prompt.message) return prompt;
-  const m = prompt.message;
-
-  // Add card names to various card lists
-  const addNames = (arr, codeKey = 'c') => {
-    if (!arr) return;
-    for (const item of arr) {
-      const code = item[codeKey];
-      if (code && !item.name) {
-        const card = cardDB.getCardFull(code);
-        if (card) item.name = card.name;
-      }
-    }
-  };
-
-  // IDLE_CMD lists
-  addNames(m.summonable);
-  addNames(m.spsum);
-  addNames(m.repos);
-  addNames(m.mset);
-  addNames(m.sset);
-  addNames(m.chains);
-
-  // Other prompts
-  if (m.cmds) addNames(m.cmds, 'c');
-  if (m.commands) addNames(m.commands, 'c');
-  if (m.cards) addNames(m.cards);
-  if (m.chs) addNames(m.chs);
-
-  return prompt;
-}
 
 function parseYdk(content) {
   const r = { main: [], extra: [], side: [] };
