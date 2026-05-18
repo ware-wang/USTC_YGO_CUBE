@@ -14,6 +14,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { DRAFT_STATES } from '../draft/index.js';
 import { handleYgoproConnection } from '../duel-bridge/ygopro-ws.js';
 
+// Paths for ocgcore resources
+const YGO_SCRIPT_PATH = path.join(__dirname, '..', '..', '..', '..', 'ygopro', 'script');
+const CARDS_CDB_PATH = path.join(__dirname, '..', '..', 'data');
+
 /** Map ws → { roomId, playerId, playerName, duelSessionId?, duelPosition? } */
 const clients = new Map();
 
@@ -41,10 +45,9 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge)
 
   ygoproWss.on('connection', (ws) => {
     console.log('[WS-Duel] New ygopro binary connection');
-    const dataDir = path.join(__dirname, '..', '..', 'data');
     handleYgoproConnection(ws, {
-      scriptPath: process.env.YGOPRO_SCRIPT_PATH || dataDir,  // fallback to data dir (no scripts but valid path)
-      cardsCdbPath: process.env.YGOPRO_CDB_PATH || dataDir,
+      scriptPath: process.env.YGOPRO_SCRIPT_PATH || YGO_SCRIPT_PATH,
+      cardsCdbPath: process.env.YGOPRO_CDB_PATH || CARDS_CDB_PATH,
     });
   });
 
@@ -292,8 +295,8 @@ async function launchNeosDuel(tableId, roomId) {
   try {
     const { registerPreloadedDecks } = await import('../duel-bridge/ygopro-ws.js');
     registerPreloadedDecks(passWd, [
-      { main: tableDecks.players[0].deck.main || [], extra: tableDecks.players[0].deck.extra || [] },
-      { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [] },
+      { main: tableDecks.players[0].deck.main || [], extra: tableDecks.players[0].deck.extra || [], side: [] },
+      { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [], side: [] },
     ]);
 
     const neosUrl = '/neos/match';

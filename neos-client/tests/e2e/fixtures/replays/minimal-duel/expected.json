@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "checkpoints": [
+    {
+      "advance": 0,
+      "cards": [],
+      "deckCounts": [
+        {
+          "controller": 0,
+          "count": 40
+        },
+        {
+          "controller": 1,
+          "count": 40
+        }
+      ],
+      "extraCounts": [
+        {
+          "controller": 0,
+          "count": 15
+        },
+        {
+          "controller": 1,
+          "count": 15
+        }
+      ],
+      "lifePoints": [
+        {
+          "player": "op",
+          "life": 8000
+        },
+        {
+          "player": "me",
+          "life": 8000
+        }
+      ],
+      "chainMarkers": []
+    }
+  ]
+}

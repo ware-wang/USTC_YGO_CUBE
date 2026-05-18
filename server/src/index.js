@@ -291,8 +291,12 @@ async function main() {
   const PROXY_PORT = process.env.YGOPRO_PROXY_PORT || 7911;
   try {
     const { startYgoproProxy } = await import('./duel-bridge/ygopro-proxy.js');
-    startYgoproProxy(httpServer);
-    console.log(`[Server] YGOPro WS proxy on ws://localhost:${PROXY_PORT}`);
+    const proxyResult = startYgoproProxy(httpServer);
+    if (proxyResult) {
+      console.log(`[Server] YGOPro WS proxy on ws://localhost:${PROXY_PORT}`);
+    } else {
+      console.log(`[Server] YGOPro proxy port ${PROXY_PORT} in use — will use direct connection`);
+    }
   } catch (e) {
     console.warn('[Server] YGOPro proxy not started:', e.message);
   }

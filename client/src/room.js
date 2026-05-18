@@ -888,7 +888,8 @@ function showBattleLobby() {
 /**
  * Handle neos-ts duel launch response from server.
  * When both players submit YDKs, server auto-creates a ygopro room.
- * Show the password and link to both players.
+ * Opens the neos-ts duel page in a new window/tab instead of an iframe.
+ * Uses a click-to-open button to avoid popup blockers.
  */
 function handleLaunchNeos(payload) {
   if (payload.error) {
@@ -897,45 +898,76 @@ function handleLaunchNeos(payload) {
   }
 
   const { passWd, neosUrl, players, instructions } = payload;
+  const playerName = state.playerName || 'Player';
+  const duelUrl = `/neos/duelroom?passwd=${encodeURIComponent(passWd)}&player=${encodeURIComponent(playerName)}`;
 
-  // Create or update a launch info panel in the battle lobby
-  let panel = el('neosLaunchPanel');
-  if (!panel) {
-    panel = document.createElement('div');
-    panel.id = 'neosLaunchPanel';
-    panel.className = 'modal';
-    el('battleLobby')?.appendChild(panel);
+  // Store the latest duel URL for button click
+  state._pendingDuelUrl = duelUrl;
+
+  // Show launch button in the battle lobby
+  let container = el('neosDuelContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'neosDuelContainer';
+    container.style.cssText = 'margin-top:16px;border-top:1px solid var(--border);padding-top:12px;';
+    el('battleLobby')?.appendChild(container);
   }
 
-  panel.innerHTML = `
-    <div class="modal-content" style="max-width:520px">
-      <h3>🎮 在线对战已就绪!</h3>
-      <div style="background:var(--bg);padding:12px;border-radius:6px;margin:10px 0">
-        <p><strong>房间密码:</strong> <code style="font-size:1.2rem;color:var(--highlight)">${passWd}</code></p>
-        <p><strong>对战双方:</strong> ${(players || []).join(' vs ')}</p>
+  container.innerHTML = `
+    <h3 style="margin-bottom:8px">🎮 对战已就绪</h3>
+    <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+      <div style="flex:1;min-width:320px">
+        <p style="margin-bottom:12px">双方卡组已提交。点击下方按钮在新窗口中打开对战。</p>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <a href="${duelUrl}" target="_blank" rel="noopener"
+             class="btn-primary btn-large"
+             style="display:inline-block;padding:12px 24px;text-decoration:none;font-size:1rem">
+            🎮 在新窗口中打开对战
+          </a>
+          <button id="openDuelNewWindowBtn" class="btn-primary btn-large">
+            🎮 打开对战
+          </button>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:8px">
+          房间密码: <code style="color:var(--highlight)">${passWd}</code> &middot;
+          玩家: <strong>${playerName}</strong>
+        </div>
       </div>
-      <div style="margin:12px 0">
-        <a href="${neosUrl}" target="_blank" rel="noopener" 
-           style="display:inline-block;padding:10px 20px;background:var(--highlight);color:white;text-decoration:none;border-radius:6px;font-weight:bold">
-          🚀 打开对战客户端
-        </a>
-      </div>
-      <div style="font-size:0.85rem;color:var(--text-dim);margin:8px 0">
-        ${instructions || '打开链接后，点击「自定义房间」卡片，输入昵称和上方房间密码'}
-      </div>
-      <div style="font-size:0.8rem;color:var(--text-dim);margin-top:12px">
-        <strong>步骤:</strong>
-        <ol style="margin:4px 0 0 16px">
-          <li>点击上方按钮打开 neos-ts 对战页面</li>
-          <li>点击页面中的 <em>自定义房间</em> 卡片（齿轮图标）</li>
-          <li>输入玩家名和房间密码 <code>${passWd}</code>，点击「加入房间」</li>
-          <li>等待对手也加入 → 自动开始对战!</li>
+      <div style="flex:0 0 240px;font-size:0.85rem;color:var(--text-dim);background:var(--bg);padding:10px;border-radius:6px">
+        <strong>📋 说明</strong>
+        <ol style="margin:8px 0 0 0;padding-left:18px">
+          <li>点击上方按钮在新窗口中打开对战</li>
+          <li>会自动连接房间并进入待战状态</li>
+          <li>双方准备就绪后自动开始对战</li>
+          <li>对战中可点击卡片查看详情</li>
+          <li><strong>不要关闭此页面</strong>，结束后返回这里查看结果</li>
         </ol>
       </div>
-      <button class="btn-secondary" style="margin-top:12px" onclick="document.getElementById('neosLaunchPanel').classList.add('hidden')">关闭</button>
     </div>
   `;
-  panel.classList.remove('hidden');
+
+  // Try window.open directly (may be blocked by popup blocker)
+  const newWin = window.open(duelUrl, '_blank');
+  if (!newWin || newWin.closed || typeof newWin.closed === 'undefined') {
+    // Popup was blocked — user must click manually
+    const btn = el('openDuelNewWindowBtn');
+    if (btn) {
+      btn.textContent = '⚠️ 请手动点击打开对战';
+      btn.onclick = () => {
+        const w = window.open(duelUrl, '_blank');
+        if (!w || w.closed) {
+          const link = el('openDuelNewWindowBtn');
+          if (link) {
+            link.outerHTML = `<a href="${duelUrl}" target="_blank" rel="noopener" class="btn-primary btn-large" style="display:inline-block;padding:12px 24px;text-decoration:none;font-size:1rem">点击打开对战 (新标签页)</a>`;
+          }
+        }
+      };
+    }
+  } else {
+    // Opened successfully — clean up button
+    const btn = el('openDuelNewWindowBtn');
+    if (btn) btn.remove();
+  }
 }
 
 function backToResults() {

@@ -303,21 +303,32 @@ export function buildStocChat(player, message) {
 
 /**
  * STOC_ERROR_MSG: send error.
- * Format: 1B msgType | 1B len | len*2 bytes msg UTF-16LE | 4B code
- * Simplified: type=1 (chat error), code=0
+ * Format (ygopro standard binary):
+ *   1B errorType  |  3B padding (zero)  |  4B errorCode (int32 LE)
+ *   Total = 8 bytes
+ *
+ * errorType values MUST match neos-ts @/api/ocgcore/idl/ocgcore.ts enum:
+ *   UNKNOWN     = 0
+ *   JOINERROR   = 1 → fetchStrings(System, 1403 + code)
+ *   DECKERROR   = 2 → flag+code in upper/lower bytes
+ *   SIDEERROR   = 3 → hardcoded "更换副卡组失败"
+ *   VERSIONERROR = 4 → hardcoded "版本不匹配，请联系技术人员解决"
  */
-export function buildStocErrorMsg(message) {
-  const msgBuf = Buffer.alloc(80);
-  writeUtf16LE(msgBuf, 0, message, Math.min(message.length, 39));
-  const trimmed = msgBuf.slice(0, Math.min(message.length, 39) * 2 + 2);
-
-  const buf = Buffer.alloc(2 + trimmed.length + 4);
-  buf.writeUInt8(1, 0);                    // msgType: CHAT
-  buf.writeUInt8(message.length, 1);       // len (in characters)
-  trimmed.copy(buf, 2);
-  buf.writeUInt32LE(0, 2 + trimmed.length); // code
+export function buildStocErrorMsg(message, errorType = 4, errorCode = 0) {
+  const buf = Buffer.alloc(8);
+  buf.writeUInt8(errorType, 0);            // errorType (1-4)
+  buf.fill(0, 1, 4);                       // 3 bytes padding
+  buf.writeInt32LE(errorCode, 4);          // errorCode (int32)
 
   return encodePacket(STOC_ERROR_MSG, buf);
+}
+
+/**
+ * Build a STOC_ERROR_MSG with a custom error code that maps to a known
+ * JOINERROR string.  The string key is `!system_{1403+code}`.
+ */
+export function buildStocJoinError(code = 0) {
+  return buildStocErrorMsg(null, 1, code);
 }
 
 // ── Helpers ───────────────────────────────────

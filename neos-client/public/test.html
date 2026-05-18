@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>neos-ts test</title></head>
+<body>
+<h2>sql.js + CDB test</h2>
+<pre id="log"></pre>
+<script type="module">
+const log = (msg) => document.getElementById('log').textContent += msg + '\n';
+
+log('Loading...');
+
+import('/neos/assets/index-Cb7WckXf.js').then(() => {
+  log('Main JS loaded OK');
+}).catch(e => log('Main JS ERR: ' + e.message));
+</script>
+</body>
+</html>

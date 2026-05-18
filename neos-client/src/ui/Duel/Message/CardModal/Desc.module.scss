@@ -1,0 +1,10 @@
+.desc {
+  line-height: 1.6;
+  font-size: 0.875rem;
+  max-height: calc(100% - 14.8rem);
+
+  .maro-item {
+    display: flex;
+    gap: 0.5rem;
+  }
+}

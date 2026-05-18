@@ -22,7 +22,14 @@ export function startYgoproProxy(httpServer) {
   const port = addr ? addr.port : 3131;
   const targetUrl = `ws://localhost:${port}/ws-duel`;
 
-  const proxyWss = new WebSocketServer({ port: PROXY_PORT, perMessageDeflate: false });
+  let proxyWss;
+  try {
+    proxyWss = new WebSocketServer({ port: PROXY_PORT, perMessageDeflate: false });
+  } catch (err) {
+    console.error(`[ygopro-proxy] Failed to bind to port ${PROXY_PORT}: ${err.message}`);
+    console.log(`[ygopro-proxy] DuelRoom will connect directly to ${targetUrl} instead.`);
+    return null;
+  }
 
   console.log(`[ygopro-proxy] External port ${PROXY_PORT} → internal ${targetUrl}`);
 
@@ -50,8 +57,13 @@ export function startYgoproProxy(httpServer) {
 
     clientWs.on('close', () => targetWs.close());
     targetWs.on('close', () => { try { clientWs.close(); } catch(e) { /* ok */ } });
-    clientWs.on('error', () => {});
-    targetWs.on('error', () => { try { clientWs.close(); } catch(e) { /* ok */ } });
+    clientWs.on('error', (err) => {
+      console.warn(`[ygopro-proxy] Client WS error: ${err.message}`);
+    });
+    targetWs.on('error', (err) => {
+      console.warn(`[ygopro-proxy] Target WS error: ${err.message}`);
+      try { clientWs.close(); } catch(e) { /* ok */ }
+    });
   });
 
   return proxyWss;

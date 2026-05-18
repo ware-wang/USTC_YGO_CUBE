@@ -120,7 +120,7 @@ export function handleYgoproConnection(ws, options = {}) {
             // Assign position
             if (currentRoom.players.length >= 2) {
               // Room full → send error and make observer? For now, error
-              ws.send(buildStocErrorMsg('Room is full'));
+              ws.send(buildStocErrorMsg(null, 1, 0)); // JOINERROR, code=0 → generic join error
               return;
             }
             playerPosition = currentRoom.players.length;
@@ -162,6 +162,31 @@ export function handleYgoproConnection(ws, options = {}) {
             }
 
             console.log(`[ygopro-ws] Room "${passWd}": ${currentRoom.players.length}/2 players`);
+
+            // ── Auto-ready for preloaded-deck rooms ──────────────────
+            // If this room has preloaded decks from cube-draft, auto-mark
+            // both players as ready immediately to skip the waitroom.
+            if (currentRoom.preloadedDecks && currentRoom.preloadedDecks.length >= 2) {
+              const player = currentRoom.players[playerPosition];
+              if (player) player.ready = true;
+
+              // Notify all players about ready state change
+              for (const p of currentRoom.players) {
+                if (p?.ws) {
+                  p.ws.send(buildStocHsPlayerChange(1, playerPosition));
+                }
+              }
+
+              console.log(`[ygopro-ws] ${playerName} auto-readied (preloaded room)`);
+
+              // Check if both players are now ready → auto-start duel
+              if (currentRoom.players.length >= 2 &&
+                  currentRoom.players[0]?.ready &&
+                  currentRoom.players[1]?.ready) {
+                console.log(`[ygopro-ws] Both players ready in preloaded room "${passWd}", auto-starting duel`);
+                await startDuel(currentRoom);
+              }
+            }
             break;
           }
 
@@ -344,7 +369,7 @@ async function startDuel(room) {
   } else {
     // No decks available
     for (const p of room.players) {
-      if (p?.ws) p.ws.send(buildStocErrorMsg('No deck data available'));
+      if (p?.ws) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR → hardcoded "版本不匹配"
     }
     room.starting = false;
     return;
@@ -431,7 +456,7 @@ async function startDuel(room) {
     session.on('error', (err) => {
       console.error(`[ygopro-ws] Duel error:`, err.message);
       for (const p of room.players) {
-        if (p?.ws) p.ws.send(buildStocErrorMsg(`Duel error: ${err.message}`));
+        if (p?.ws) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
       }
     });
 
@@ -449,7 +474,7 @@ async function startDuel(room) {
     room.starting = false;
     room.session = null;
     for (const p of room.players) {
-      if (p?.ws && p.ws.readyState === 1) p.ws.send(buildStocErrorMsg(`Failed to start duel: ${err.message}`));
+      if (p?.ws && p.ws.readyState === 1) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
     }
   }
 }

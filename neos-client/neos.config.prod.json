@@ -1,0 +1,65 @@
+{
+  "version": 4962,
+  "servers": [
+    {
+      "name": "Cube Draft (local)",
+      "ip": "127.0.0.1",
+      "port": "7911"
+    },
+    {
+      "name": "koishi",
+      "ip": "koishi.momobako.com",
+      "port": "7211"
+    },
+    {
+      "name": "mycard-athletic",
+      "ip": "tiramisu.moenext.com",
+      "port": "8912"
+    },
+    {
+      "name": "mycard-custom",
+      "ip": "tiramisu.moenext.com",
+      "port": "7912"
+    },
+    {
+      "name": "pre-release",
+      "ip": "koishi.momobako.com",
+      "port": "889"
+    },
+    {
+      "name": "408",
+      "ip": "koishi.momobako.com",
+      "port": "1408"
+    }
+  ],
+  "assetsPath": "/neos-assets",
+  "releaseResource": {
+    "img": "/ygopro-database/pics",
+    "cdb": "/ygopro-database/zh-CN/cards.cdb",
+    "lflist": "/ygopro-database/zh-CN/lflist.conf"
+  },
+  "preReleaseResource": {
+    "img": "/ygopro-database/pics",
+    "cdb": "/ygopro-database/zh-CN/cards.cdb",
+    "lflist": "/ygopro-database/zh-CN/lflist.conf",
+    "config": "/ygopro-database/zh-CN/test-release-v2.json"
+  },
+  "env408Resource": {
+    "lflist": "/ygopro-database/zh-CN/lflist.conf"
+  },
+  "stringsUrl": "/ygopro-database/zh-CN/strings.conf",
+  "loginUrl": "https://accounts.moecube.com/signin",
+  "logoutUrl": "https://accounts.moecube.com/signout",
+  "profileUrl": "https://accounts.moecube.com/profiles",
+  "athleticWatchUrl": "wss://tiramisu.moecube.com:8923",
+  "entertainWatchUrl": "wss://tiramisu.moecube.com:7923",
+  "userApi": "https://sapi.moecube.com:444/accounts/users/{username}.json",
+  "mdproServer": "https://zgai.tech:38443",
+  "agentServer": "https://sapi.moecube.com:444/neos-ai-agent",
+  "startDelay": 1000,
+  "ui": {
+    "hint": {
+      "maxCount": 1
+    }
+  }
+}

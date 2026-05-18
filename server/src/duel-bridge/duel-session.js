@@ -16,6 +16,8 @@
 
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Force CJS version (Node.js fetch doesn't support file:// for WASM loading)
 const require = createRequire(import.meta.url);
@@ -88,7 +90,18 @@ export class DuelSession extends EventEmitter {
       const deck = this.decks[player];
       if (!deck) continue;
 
-      const main = [...deck.main].reverse();
+      console.log(`[DuelSession] Player ${player} raw deck: main=${deck.main?.length || 0}, extra=${deck.extra?.length || 0}`);
+
+      // Filter cards without Lua scripts (prevents WASM crash)
+      const missingScripts = [];
+      const main = [...deck.main].reverse().filter(code => {
+        const hasScript = existsSync(join(this.scriptPath, `c${code}.lua`));
+        if (!hasScript) missingScripts.push(code);
+        return hasScript;
+      });
+      if (missingScripts.length > 0) {
+        console.warn(`[DuelSession] Skipping ${missingScripts.length} main-deck cards without scripts: ${missingScripts.slice(0, 10).join(',')}${missingScripts.length > 10 ? '...' : ''}`);
+      }
       for (const code of main) {
         this.#duel.newCard({
           code, owner: player, player,
@@ -98,7 +111,14 @@ export class DuelSession extends EventEmitter {
         });
       }
 
-      const extra = [...deck.extra].reverse();
+      const extra = [...deck.extra].reverse().filter(code => {
+        const hasScript = existsSync(join(this.scriptPath, `c${code}.lua`));
+        if (!hasScript) missingScripts.push(code);
+        return hasScript;
+      });
+      if (missingScripts.length > 0 && deck.extra?.length > 0) {
+        console.warn(`[DuelSession] Player ${player}: ${missingScripts.length} cards skipped (no Lua script)`);
+      }
       for (const code of extra) {
         this.#duel.newCard({
           code, owner: player, player,
