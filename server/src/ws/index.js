@@ -40,7 +40,19 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge)
       catch { return; }
       handleMessage(ws, msg, roomManager);
     });
-    ws.on('close', () => { clients.delete(ws); });
+    ws.on('close', () => {
+      const client = clients.get(ws);
+      if (!client) return;
+
+      clients.delete(ws);
+      const room = roomManager.disconnectPlayer(client.roomId, client.playerId);
+      if (room) {
+        broadcast(client.roomId, roomManager, null, {
+          type: 'room_update',
+          payload: { room: roomManager.getRoomPublic(client.roomId) },
+        });
+      }
+    });
   });
 
   ygoproWss.on('connection', (ws) => {
@@ -79,7 +91,7 @@ function handleMessage(ws, msg, roomManager) {
     case 'confirm_pick': return handleConfirmPick(ws, payload, roomManager);
     case 'get_pack': return handleGetPack(ws, payload, roomManager);
     case 'get_ydk': return handleGetYdk(ws, payload, roomManager);
-    case 'leave_room': return handleLeave(clients.get(ws), roomManager);
+    case 'leave_room': return handleLeave(ws, roomManager);
     case 'swap_seat': return handleSwapSeat(ws, payload, roomManager);
     case 'chat': return handleChat(ws, payload, roomManager);
     case 'duel_join_table': return handleDuelJoin(ws, payload);
@@ -147,6 +159,13 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 
   const { player, room } = result;
+  const previousWs = findPlayerWs(room.id, player.id);
+  if (previousWs && previousWs !== ws) {
+    clients.delete(previousWs);
+    try { previousWs.close(4000, 'replaced by reconnect'); }
+    catch {}
+  }
+
   clients.set(ws, { roomId: room.id, playerId: player.id, playerName });
 
   const pub = rm.getRoomPublic(roomId);
@@ -246,9 +265,19 @@ function handleChat(ws, { roomId, text }, rm) {
   broadcast(roomId, rm, null, { type: 'chat', payload: { name: msg.name, text: msg.text, time: msg.time } });
 }
 
-function handleLeave(client, rm) {
+function handleLeave(ws, rm) {
+  const client = clients.get(ws);
   if (!client) return;
-  rm.removePlayer(client.roomId, client.playerId);
+  clients.delete(ws);
+  const room = rm.removePlayer(client.roomId, client.playerId);
+  if (room) {
+    broadcast(client.roomId, rm, null, {
+      type: 'room_update',
+      payload: { room: rm.getRoomPublic(client.roomId) },
+    });
+  }
+  try { ws.close(1000, 'leave_room'); }
+  catch {}
 }
 
 // ── Battle / Duel handlers ───────────────────

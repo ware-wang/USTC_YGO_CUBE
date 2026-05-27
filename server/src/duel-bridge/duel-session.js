@@ -52,12 +52,19 @@ export class DuelSession extends EventEmitter {
     this.scriptPath = scriptPath;
     this.cardsCdbPath = cardsCdbPath;
     this.seed = seed || Date.now();
+    this.loadedDecks = Array.from({ length: 2 }, () => ({ main: [], extra: [] }));
   }
 
   get active() { return this.#active; }
   get turnCount() { return this.#turnCount; }
   get turnPlayer() { return this.#turnPlayer; }
   get currentPhase() { return this.#currentPhase; }
+  getDeckSizes() {
+    return this.loadedDecks.map((deck) => ({
+      main: deck.main.length,
+      extra: deck.extra.length,
+    }));
+  }
 
   // ── Initialization ───────────────────────────
 
@@ -127,6 +134,11 @@ export class DuelSession extends EventEmitter {
           position: OcgcoreScriptConstants.POS_FACEDOWN_DEFENSE,
         });
       }
+
+      this.loadedDecks[player] = {
+        main: [...main].reverse(),
+        extra: [...extra].reverse(),
+      };
     }
 
     // Calculate and apply duel options

@@ -60,7 +60,7 @@ class CubeManager {
   /** Get a cube by name */
   getCube(name) {
     return this.cubes.get(name) || null;
- 伸}
+  }
 }
 
 /** Parse .ydk file content into a Cube */

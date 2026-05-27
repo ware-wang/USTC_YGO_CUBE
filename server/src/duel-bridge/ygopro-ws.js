@@ -21,6 +21,8 @@ import {
   buildStocGameMsg, buildStocChat, buildStocErrorMsg,
 } from './protocol-adapter.js';
 
+const MSG_START = 0x04;
+
 // ── Room management ───────────────────────────
 
 /** @type {Map<string, PendingRoom>} */
@@ -396,8 +398,12 @@ async function startDuel(room) {
     room.sessionId = session.sessionId;
 
     // Send DUEL_START to both players AFTER session is ready
-    for (const p of room.players) {
-      if (p?.ws) p.ws.send(buildStocDuelStart());
+    const deckSizes = session.getDeckSizes();
+    for (let i = 0; i < room.players.length; i++) {
+      const p = room.players[i];
+      if (!p?.ws) continue;
+      p.ws.send(buildStocDuelStart());
+      p.ws.send(buildStocGameMsg(buildMsgStartPayload(i, deckSizes, room)));
     }
 
     // Hook up events for relay
@@ -477,6 +483,28 @@ async function startDuel(room) {
       if (p?.ws && p.ws.readyState === 1) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
     }
   }
+}
+
+function buildMsgStartPayload(playerIndex, deckSizes, room) {
+  const myDeck = deckSizes[playerIndex] || { main: 0, extra: 0 };
+  const opDeck = deckSizes[1 - playerIndex] || { main: 0, extra: 0 };
+  const hasMasterRule = room.session?.hostinfo?.duel_rule >= 5;
+  const buf = Buffer.alloc(hasMasterRule ? 18 : 17);
+  let offset = 0;
+
+  buf.writeUInt8(playerIndex & 0x0f, offset++);
+  if (hasMasterRule) {
+    buf.writeUInt8(room.session.hostinfo.duel_rule, offset++);
+  }
+
+  buf.writeInt32LE(room.session.hostinfo.start_lp, offset); offset += 4;
+  buf.writeInt32LE(room.session.hostinfo.start_lp, offset); offset += 4;
+  buf.writeInt16LE(myDeck.main, offset); offset += 2;
+  buf.writeInt16LE(myDeck.extra, offset); offset += 2;
+  buf.writeInt16LE(opDeck.main, offset); offset += 2;
+  buf.writeInt16LE(opDeck.extra, offset); offset += 2;
+
+  return Buffer.concat([Buffer.from([MSG_START]), buf]);
 }
 
 // ── Cleanup timer ────────────────────────────

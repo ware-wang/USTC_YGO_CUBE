@@ -2,10 +2,14 @@ import { v4 as uuid } from 'uuid';
 import { DraftEngine, DRAFT_STATES } from '../draft/index.js';
 
 const ROOM_EXPIRY_MS = 30 * 60_000; // rooms cleanup after 30min idle
+const IDLE_DISCONNECTED_PLAYER_GRACE_MS = 15_000;
+const CLEANUP_INTERVAL_MS = 15_000;
 
 export class RoomManager {
   constructor() {
     this.rooms = new Map();  // roomId → Room
+    this.cleanupTimer = setInterval(() => this._cleanup(), CLEANUP_INTERVAL_MS);
+    this.cleanupTimer.unref?.();
   }
 
   createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode) {
@@ -33,17 +37,20 @@ export class RoomManager {
   }
 
   addPlayer(roomId, playerName, password) {
+    this._cleanup();
     const room = this.rooms.get(roomId);
     if (!room) return { error: '房间不存在' };
-    if (room.state === DRAFT_STATES.DRAFTING) return { error: '轮抽已开始，无法加入' };
     if (room.password && room.password !== password) return { error: '密码错误' };
 
     // Check for reconnection: same name already in room
     const existing = room.players.find(p => p.name === playerName);
     if (existing) {
+      existing.disconnectedAt = null;
       room.lastActive = Date.now();
       return { player: existing, room, reconnected: true };
     }
+
+    if (room.state === DRAFT_STATES.DRAFTING) return { error: '轮抽已开始，无法加入' };
 
     if (room.players.length >= room.maxPlayers) return { error: '房间已满' };
 
@@ -58,6 +65,7 @@ export class RoomManager {
       name: playerName,
       seatIndex,
       ws: null,
+      disconnectedAt: null,
     };
     room.players.push(player);
     room.lastActive = Date.now();
@@ -78,9 +86,22 @@ export class RoomManager {
     return room;
   }
 
+  disconnectPlayer(roomId, playerId) {
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    const player = room.players.find(p => p.id === playerId);
+    if (!player) return room;
+
+    player.disconnectedAt = Date.now();
+    room.lastActive = Date.now();
+    return room;
+  }
+
   startDraft(roomId) {
     const room = this.rooms.get(roomId);
     if (!room) return { error: '房间不存在' };
+    this._pruneDisconnectedPlayers(room, Date.now(), true);
     if (room.players.length < 2) return { error: '至少需要2名玩家' };
     if (room.state === DRAFT_STATES.DRAFTING) return { error: '轮抽已开始' };
 
@@ -138,10 +159,12 @@ export class RoomManager {
   }
 
   getRoom(id) {
+    this._cleanup();
     return this.rooms.get(id) || null;
   }
 
   getRoomPublic(id) {
+    this._cleanup();
     const room = this.rooms.get(id);
     if (!room) return null;
     return {
@@ -150,7 +173,12 @@ export class RoomManager {
       hasPassword: !!room.password,
       checkDeckSize: room.checkDeckSize,
       testMode: room.testMode,
-      players: room.players.map(p => ({ id: p.id, name: p.name, seatIndex: p.seatIndex })),
+      players: room.players.map(p => ({
+        id: p.id,
+        name: p.name,
+        seatIndex: p.seatIndex,
+        connected: !p.disconnectedAt,
+      })),
       maxPlayers: room.maxPlayers,
       packsPerPlayer: room.packsPerPlayer,
       cardsPerPack: room.cardsPerPack,
@@ -162,9 +190,27 @@ export class RoomManager {
   _cleanup() {
     const now = Date.now();
     for (const [id, room] of this.rooms) {
+      this._pruneDisconnectedPlayers(room, now, false);
+
       if (now - room.lastActive > ROOM_EXPIRY_MS) {
         this.rooms.delete(id);
       }
     }
+  }
+
+  _pruneDisconnectedPlayers(room, now, forceIdlePrune) {
+    room.players = room.players.filter((player) => {
+      if (!player.disconnectedAt) return true;
+
+      if (room.state !== DRAFT_STATES.IDLE) {
+        return true;
+      }
+
+      if (forceIdlePrune) {
+        return false;
+      }
+
+      return now - player.disconnectedAt <= IDLE_DISCONNECTED_PLAYER_GRACE_MS;
+    });
   }
 }

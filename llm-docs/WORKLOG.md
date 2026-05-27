@@ -129,3 +129,70 @@ node test-ygopro-ws.js
 1. 需要做**真正浏览器层面的端到端回归**，不是只靠协议测试。
 2. 某些卡缺 Lua 脚本时会被跳过，这会影响特定卡的实际效果。
 3. 代码里仍有少量旧对战路径残留，后续最好彻底下线或重构。
+
+### 后续补充修复
+
+#### 5. 修复房间 WebSocket 生命周期导致的幽灵座位
+
+问题：
+
+- `client/src/ws/client.js` 会在模块加载时自动连接
+- `client/src/room.js` 初始化时又会额外调用一次 `connect()`
+- 断开连接后，server 只删 `clients` 映射，不会把房间里的玩家状态同步清理
+
+现象：
+
+- 房间页面可能挂出重复 WS 连接
+- 玩家关闭房间页后，座位仍然残留
+- 房主可能看到“人还在”，但实际上对方已经掉线
+
+修复：
+
+- `client/src/ws/client.js` 改成单连接模式，重复调用 `connect()` 时直接复用
+- 去掉 lobby 页对 `wsClient` 的无效导入
+- `server/src/ws/index.js` 在连接关闭和显式 `leave_room` 时同步更新房间
+- `server/src/room/index.js` 为 idle 房间增加断线宽限和清理逻辑，并在 `getRoom*()` 时触发清理
+
+验证：
+
+- 新增 `server/test-room-lifecycle.mjs`
+- 隔离端口回归确认：
+  - 新建房间在首次 WS 加入前不会被误删
+  - 玩家断线后短时间内会显示 `connected: false`
+  - idle 房间断线玩家会在宽限后被清掉
+  - `leave_room` 会立即移除玩家并广播 `room_update`
+
+#### 6. 修复 neos WaitRoom 一直转圈、无法准备/开局
+
+问题：
+
+- `ygopro-ws` 在 `STOC_DUEL_START` 之后没有立刻补发 `MSG_START`
+- neos-ts 的 `/neos/duelroom` / `/waitroom` 依赖这条 `STOC_GAME_MSG(func=4)` 初始化对局
+- 缺失时前端会停在“等待游戏开始”的加载态，看起来像按钮一直转圈、无法继续
+
+根因：
+
+- 协议层测试原本只验证到了 `STOC_DUEL_START`
+- 真正的 neos waitroom 还需要收到 `MSG_START` 才会继续跳转 `/duel`
+
+修复：
+
+- `server/src/duel-bridge/duel-session.js` 记录实际装载进对局的主卡组/额外卡组数量
+- `server/src/duel-bridge/ygopro-ws.js` 在每个玩家收到 `STOC_DUEL_START` 后，立即补发一条按玩家视角构造的 `MSG_START`
+
+验证：
+
+- 在 `ws://localhost:3131/ws-duel` 上重新跑协议联调
+- 已确认现在消息顺序包含：
+  - `STOC_DUEL_START`
+  - `STOC_GAME_MSG func=4` (`MSG_START`)
+  - 后续 `MSG_DRAW` / `MSG_HINT` / `MSG_SELECT_IDLE_CMD`
+
+#### 7. 本次调试中的一个现实问题
+
+这次用户反馈时，`3131` 上运行的仍是**旧进程**，没有吃到后续代码改动。
+
+处理：
+
+- 已手动重启 `server` 主进程
+- 当前 2026-05-27 的主服务已经在 `http://localhost:3131` 跑着最新代码

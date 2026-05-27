@@ -12,28 +12,43 @@ let reconnectDelay = 1000;
 let connected = false;
 
 function connect() {
-  try { ws = new WebSocket(WS_URL); } catch (e) { scheduleReconnect(); return; }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
 
-  ws.onopen = () => {
+  let socket = null;
+  try { socket = new WebSocket(WS_URL); } catch (e) { scheduleReconnect(); return; }
+  ws = socket;
+
+  socket.onopen = () => {
+    if (ws !== socket) return;
     connected = true;
     reconnectDelay = 1000;
     emit('connected', {});
   };
 
-  ws.onmessage = (ev) => {
+  socket.onmessage = (ev) => {
+    if (ws !== socket) return;
     try {
       const msg = JSON.parse(ev.data);
       emit(msg.type, msg);
     } catch (e) { /* ignore malformed */ }
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    ws = null;
     connected = false;
     emit('disconnected', {});
     scheduleReconnect();
   };
 
-  ws.onerror = (e) => {
+  socket.onerror = (e) => {
+    if (ws !== socket) return;
     console.error('[WS] Error:', e);
   };
 }
@@ -76,6 +91,3 @@ export const wsClient = {
   on,
   isConnected,
 };
-
-// Auto-connect
-connect();

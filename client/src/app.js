@@ -2,7 +2,6 @@
  * Cube Draft - Lobby Page
  * Handles room creation and joining. Redirects to room.html on success.
  */
-import { wsClient } from './ws/client.js';
 
 /* ======================== DOM UTILS ======================== */
 const el = (id) => document.getElementById(id);

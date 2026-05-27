@@ -81,6 +81,7 @@
 当前已有：
 
 - `server/test-ygopro-ws.js`
+- `server/test-room-lifecycle.mjs`
 
 但这只是 duel 协议层测试，不是完整业务流测试。
 
