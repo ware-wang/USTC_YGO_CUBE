@@ -227,6 +227,19 @@ cube-draft/
 - **数据库**: SQLite (sql.js) — 卡牌数据
 - **卡牌数据**: cards.cdb + Lua 脚本
 
+## LLM Handoff Docs
+
+项目根目录维护了一个面向后续模型接手的文档目录：
+
+- `llm-docs/README.md` — 索引
+- `llm-docs/PROJECT_MAP.md` — 项目地图
+- `llm-docs/WORKLOG.md` — 工作记录
+- `llm-docs/NEXT_STEPS.md` — 下一步方向
+- `llm-docs/DEBUGGING_RUNBOOK.md` — 调试/回归手册
+- `llm-docs/OPEN_QUESTIONS.md` — 未决问题
+
+如果你是新接手的模型，建议先读 `llm-docs/README.md`。
+
 ## License
 
 MIT
