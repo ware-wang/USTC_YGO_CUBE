@@ -257,7 +257,11 @@ function handleBattleCreate(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: 'Room not found' } });
   const tables = duelManagerRef.createBattleTables(room);
-  broadcast(roomId, rm, null, { type: 'battle_tables_created', payload: { tables: tables.map(t => ({ id: t.id, roomId: t.roomId, state: t.state, seats: t.seats })) } });
+  const payload = { tables: tables.map(t => ({ id: t.id, roomId: t.roomId, state: t.state, seats: t.seats })) };
+  // Emit both names for compatibility: older clients listen for
+  // battle_tables_ready while newer code may expect battle_tables_created.
+  broadcast(roomId, rm, null, { type: 'battle_tables_ready', payload });
+  broadcast(roomId, rm, null, { type: 'battle_tables_created', payload });
 }
 
 function handleDuelJoin(ws, { tableId, seatIndex }) {
@@ -299,7 +303,7 @@ async function launchNeosDuel(tableId, roomId) {
       { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [], side: [] },
     ]);
 
-    const neosUrl = '/neos/match';
+    const neosUrl = '/neos/duelroom';
     const p1Name = findClientByPlayer(roomId, tableDecks.players[0].id)?.playerName || 'Player1';
     const p2Name = findClientByPlayer(roomId, tableDecks.players[1].id)?.playerName || 'Player2';
 
@@ -312,7 +316,7 @@ async function launchNeosDuel(tableId, roomId) {
         neosUrl,
         tableId,
         players: [p1Name, p2Name],
-        instructions: `打开链接后，点击「自定义房间」，输入昵称和密码: ${passWd}`,
+        instructions: `打开链接后会自动带入房间密码 ${passWd} 并尝试连接当前服务器；如果失败，可在页面里手动重连。`,
       },
     });
   } catch (e) {
@@ -327,6 +331,14 @@ async function launchNeosDuel(tableId, roomId) {
 function handleDuelStart(ws, { tableId }) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+
+  if (typeof duelManagerRef?.startDuel !== 'function') {
+    return send(ws, {
+      type: 'error',
+      payload: { message: '当前版本不再通过 duel_start 手动开局；双方提交卡组后会自动启动浏览器对战。' },
+    });
+  }
+
   const result = duelManagerRef.startDuel(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
   broadcastDuel(tableId, null, { type: 'duel_started', payload: { tableId, state: result.state } });
@@ -335,6 +347,14 @@ function handleDuelStart(ws, { tableId }) {
 function handleDuelRespond(ws, { tableId, response }) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+
+  if (typeof duelManagerRef?.handleResponse !== 'function') {
+    return send(ws, {
+      type: 'error',
+      payload: { message: '当前版本不再通过 duel_respond 走房间内协议；请在 neos 对战窗口中操作。' },
+    });
+  }
+
   const result = duelManagerRef.handleResponse(tableId, client.playerId, response);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 }

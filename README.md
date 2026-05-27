@@ -126,11 +126,11 @@ PORT=8080 npm start
 
 1. 双方完成组卡后，进入**对战大厅**
 2. 在座位上粘贴 YDK 并提交
-3. 双方就绪后，系统弹出房间密码和 `/neos/` 链接
-4. 点击「启动对战」按钮，浏览器将打开新窗口
-5. 在 neos-ts 界面选择 **"Cube Draft (local)"** 服务器
-6. 输入昵称和房间密码，点击连接
-7. 系统自动匹配对手，开始对战！
+3. 双方都提交后，系统会推送一个 **`/neos/duelroom` 自动入房链接**
+4. 点击按钮会在新窗口打开对战，并自动带入昵称与房间密码
+5. 页面默认连接当前主机的 **7911** YGOPro 代理端口
+6. 如果自动连接失败，可在页面里手动填写 `主机:端口`、昵称和房间密码后重试
+7. 双方进入待战房间后会自动开始对战
 
 ### 对战界面功能
 - 卡牌渲染展示
@@ -197,16 +197,17 @@ cube-draft/
 
 ### 对战流程
 ```
-玩家A/B: cube-draft → 轮抽 → 组卡 → POST /api/launch-duel
+玩家A/B: cube-draft → 轮抽 → 组卡 → 提交 YDK 到 battle table
                                           ↓
-                         服务器注册预加载卡组 (密码=房间号)
+                         服务器注册预加载卡组（按 table 生成房间密码）
                                           ↓
-玩家A/B: 打开 /neos/ → 选"Cube Draft (local)" 
-       → 输入名字+密码 → 连接 ws://127.0.0.1:7911
+玩家A/B: 打开 /neos/duelroom?passwd=...&player=...
+                                          ↓
+                         DuelRoom 默认连接 ws://<当前主机>:7911
                                           ↓
                          ygopro-proxy 转发 → /ws-duel
                                           ↓
-                         ygopro-ws 匹配双人 → DuelSession
+                         ygopro-ws 匹配双人 / 自动 ready → DuelSession
                                           ↓
                          ocgcore WASM 原始二进制 ↔ neos-ts 渲染
 ```

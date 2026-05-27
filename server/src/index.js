@@ -257,16 +257,18 @@ async function main() {
       // Register preloaded decks with the ygopro WS handler
       registerPreloadedDecks(passWd, decks);
 
-      const neosUrl = `/neos/match`;
+      const neosUrl = `/neos/duelroom`;
 
       res.json({
         passWd,
         neosUrl,
+        manualNeosUrl: '/neos/match',
         players: players.map((p, i) => ({
           name: p.name,
           position: i,
+          duelUrl: `${neosUrl}?passwd=${encodeURIComponent(passWd)}&player=${encodeURIComponent(p.name || `Player${i + 1}`)}`,
         })),
-        instructions: `Open ${neosUrl}, select "Cube Draft (local)" server, enter your name and password: ${passWd}`,
+        instructions: `Open each player's duelUrl to auto-join the room. If auto-connect fails, open /neos/match and connect manually with password: ${passWd}`,
       });
     } catch (e) {
       console.error('[LaunchDuel] Error:', e);

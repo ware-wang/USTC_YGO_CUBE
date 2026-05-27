@@ -381,10 +381,13 @@ function setupHandlers() {
 
   // ═══ Battle table handlers ═══
 
-  wsClient.on('battle_tables_ready', (msg) => {
+  const handleBattleTables = (msg) => {
     state.battle.tables = msg.payload.tables;
     renderBattleTables();
-  });
+  };
+
+  wsClient.on('battle_tables_ready', handleBattleTables);
+  wsClient.on('battle_tables_created', handleBattleTables);
 
   wsClient.on('duel_table_joined', (msg) => {
     updateTableFromServer(msg.payload);

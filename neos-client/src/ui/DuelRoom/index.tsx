@@ -37,10 +37,11 @@ export const Component: React.FC = () => {
 
   const passwd = params.get("passwd") || "cube";
   const player = params.get("player") || "Player";
-  // Default server: connect directly to the main server's /ws-duel endpoint,
-  // bypassing the ygopro proxy (port 7911). Use the current window's host/port
-  // since the SPA runs on the same origin as the server.
-  const defaultServer = window.location.host + "/ws-duel";
+  // Default to the legacy ygopro-compatible proxy on the current host.
+  // neos-ts expects a host:port target instead of a ws path, so `/ws-duel`
+  // is not a valid default here.
+  const hostname = window.location.hostname || "127.0.0.1";
+  const defaultServer = `${hostname}:7911`;
   const server = params.get("server") || defaultServer;
 
   // Pre-fill manual form
@@ -207,8 +208,8 @@ export const Component: React.FC = () => {
         </Button>
 
         <div style={{ marginTop: 12, fontSize: "0.75rem", color: "#666" }}>
-          <p>确保 YGOPro 代理 (端口 7911) 已启动。</p>
-          <p>提示: 也可直接访问 neos-ts 首页手动连接</p>
+          <p>默认会连接当前主机的 YGOPro 代理（端口 7911）。</p>
+          <p>如果你改了代理端口，可在上面手动填写 `主机:端口` 后重试。</p>
         </div>
       </div>
     </div>
