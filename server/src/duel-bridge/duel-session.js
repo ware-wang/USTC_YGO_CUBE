@@ -212,15 +212,11 @@ export class DuelSession extends EventEmitter {
           return;
         }
 
-        if (result.raw.length === 0 && result.status === 0) {
-          continue; // keep processing
-        }
-
-        if (result.status !== 0) {
-          this.#active = false;
-          this.emit('done');
-          return;
-        }
+        // Keep advancing after ordinary messages regardless of non-zero status.
+        // srvpro2 only stops on duel end, retry, or response-required messages;
+        // stopping here can truncate follow-up messages such as CHAIN_END after
+        // CONFIRM_CARDS, leaving the browser stuck with stale chain markers.
+        continue;
       }
     } catch (e) {
       this.#active = false;

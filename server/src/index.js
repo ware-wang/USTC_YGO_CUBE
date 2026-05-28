@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
+import { existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { cardDB } from './card-db/index.js';
@@ -13,14 +14,32 @@ import { registerPreloadedDecks } from './duel-bridge/ygopro-ws.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.join(__dirname, '..', '..', 'client', 'src');
 const NEOS_DIR = path.join(__dirname, '..', '..', 'neos-client', 'dist');
+const REPO_ROOT = path.join(__dirname, '..', '..');
+const WORKSPACE_ROOT = path.join(REPO_ROOT, '..');
 
 // Paths for ocgcore resources
-const YGO_SCRIPT_PATH = path.join(__dirname, '..', '..', '..', 'ygopro', 'script');
 const CARDS_CDB_PATH = path.join(__dirname, '..', 'data');
+const YGO_SCRIPT_PATH = resolveExistingPath(
+  process.env.YGO_SCRIPT_PATH,
+  path.join(REPO_ROOT, 'ygopro', 'script'),
+  path.join(WORKSPACE_ROOT, 'ygopro', 'script'),
+);
 
 const PORT = process.env.PORT || 3131;
 
+function resolveExistingPath(...candidates) {
+  const usable = candidates.filter(Boolean).map((candidate) => path.resolve(candidate));
+  return usable.find((candidate) => existsSync(candidate)) || usable[0] || null;
+}
+
 async function main() {
+  if (YGO_SCRIPT_PATH) {
+    console.log(`[Server] YGO script path: ${YGO_SCRIPT_PATH}`);
+  } else {
+    console.warn('[Server] YGO script path not found. Set YGO_SCRIPT_PATH or place scripts in ./ygopro/script');
+  }
+  console.log(`[Server] Card DB dir: ${CARDS_CDB_PATH}`);
+
   // Init card database
   await cardDB.init();
 

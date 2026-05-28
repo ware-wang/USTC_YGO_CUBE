@@ -258,6 +258,77 @@ node test-ygopro-ws.js
 - 调试流程不再必须手工凑 40 张
 - 同时又能避免“进了 duel 但其实开局即死”的假阳性
 
+---
+
+## 2026-05-28
+
+### 目标
+
+修复“黑森林的魔女”送入墓地发动检索后，对局卡住、墓地卡片仍显示连锁标志的问题。
+
+### 根因
+
+问题不只是前端标志残留。
+
+`server/src/duel-bridge/duel-session.js` 的 `advance()` 在普通 game message 后遇到非 0 `status` 会直接把 session 标记为 done。黑森林检索这类流程中，后端已经发出了 `YGOProMsgChaining` 和检索选择，但在 `CONFIRM_CARDS` 之后还需要继续 `process()` 才会吐出后续的 `YGOProMsgChainSolved`、`YGOProMsgChainEnd` 和新的 `YGOProMsgSelectIdleCmd`。
+
+旧逻辑提前停止后，浏览器永远等不到连锁结束消息，所以：
+
+- `placeStore.chainIndex` 没有完整清理
+- 墓地里的黑森林仍显示连锁标志
+- 对局没有回到自由时点
+
+### 修复
+
+- `server/src/duel-bridge/duel-session.js`
+  - 普通消息发出后继续推进 ocgcore
+  - 只在 `WIN`、`RETRY`、需要玩家响应的消息、或 `status === 2` 时停止
+  - 行为对齐 srvpro2 的 worker 推进模型
+- `neos-client/src/service/duel/chainEnd.ts`
+  - 保留原本按连锁栈逐项 `pop` 的清理
+  - 在 `CHAIN_END` 额外兜底清空所有场地区域的 `chainIndex`
+  - 覆盖“卡片处理过程中移动位置，原位置 pop 不到”的显示残留
+
+### 验证
+
+已完成协议级最小复现：
+
+- 召唤 `78010363` 黑森林的魔女
+- 发动 `53129443` 黑洞
+- 黑森林在墓地发动检索
+- 选择一张卡加入手牌
+- 确认后端继续收到：
+  - `YGOProMsgChainSolved`
+  - `YGOProMsgChainEnd`
+  - 新的 `YGOProMsgSelectIdleCmd`
+
+已完成真实浏览器回归：
+
+- 启动 server：`http://localhost:3131`
+- 通过 `POST /api/launch-duel` 预加载两副交替排列的黑森林/黑洞测试牌组
+- 打开双方 `/neos/duelroom?passwd=...&player=...`
+- 在 Alice 页面执行：
+  - 通常召唤黑森林的魔女
+  - 发动黑洞
+  - 处理黑森林检索
+- 验证：
+  - `[data-testid="duel-chain-marker"]` 数量回到 0
+  - 黑森林位于 `GRAVE`
+  - `duel-phase-select` 恢复 enabled
+
+前端构建已通过：
+
+```bash
+cd neos-client
+npm run build
+```
+
+构建只出现 Vite/sql.js/chunk size 常规警告。
+
+### 注意
+
+这次验证覆盖了真实 `/neos/duelroom -> /neos/duel` 内的卡片操作、效果处理和连锁结束显示；但还不是完整“轮抽建房 -> 选牌 -> 组卡 -> 对战”的业务流端到端测试。
+
 #### 10. 修复 testMode 下“看起来是合法牌组，实际进 DuelSession 后被脚本过滤空掉”
 
 问题：

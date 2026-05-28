@@ -22,6 +22,14 @@ export default (
     }
   }
 
+  // CHAIN_END means no chain marker should remain anywhere. This guards
+  // against cards that moved while resolving, such as GY trigger effects.
+  Object.values(context.placeStore.inner).forEach(({ me, op }) => {
+    [...me, ...op].forEach((block) => {
+      block.chainIndex = [];
+    });
+  });
+
   // 目前selected字段只会涉及连锁过程某些卡成为效果对象，
   // 因此在连锁结束的时候把selected标记清掉。
   //

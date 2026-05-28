@@ -207,6 +207,24 @@ node test-ygopro-ws.js
 - 如果这些老消息被触发，返回明确错误提示
 - 不再无保护地触发 `TypeError`
 
+### 8.5 黑森林的魔女检索后连锁标志残留
+
+曾经的现象：
+
+- `78010363` 黑森林的魔女送入墓地后发动检索
+- 检索卡加入手牌后，墓地里的黑森林仍显示连锁标志
+- 对局无法回到自由时点继续操作
+
+根因：
+
+- `DuelSession.advance()` 在普通 game message 后遇到非 0 `status` 会提前结束
+- `CONFIRM_CARDS` 后的 `CHAIN_SOLVED` / `CHAIN_END` / 下一次 `SELECT_IDLE_CMD` 被截断
+
+现在已改为：
+
+- 后端普通消息后继续推进 ocgcore
+- 前端 `CHAIN_END` 兜底清空所有位置的 `chainIndex`
+
 ## 9. 常见故障排查
 
 ### 9.1 Node 22 下行为异常
@@ -257,6 +275,22 @@ curl http://localhost:3131/api/stats
 
 说明 `ygopro/script/` 里缺对应 Lua。项目当前策略是跳过并继续，不一定会阻止对战启动，但会影响具体卡牌效果。
 
+### 9.5 连锁处理后卡住
+
+先确认后端是否继续输出完整连锁消息：
+
+- `YGOProMsgChainSolved`
+- `YGOProMsgChainEnd`
+- 后续新的 `YGOProMsgSelectIdleCmd`
+
+如果后端完整但 UI 仍残留标志，检查浏览器 DOM：
+
+```text
+[data-testid="duel-chain-marker"]
+```
+
+`CHAIN_END` 后它应为 0 个。
+
 ## 10. 调试建议
 
 ### 看 server 实时日志
@@ -291,6 +325,7 @@ find ../neos-client/dist -maxdepth 2 -type f | head
 - [ ] `node test-ygopro-ws.js` 通过
 - [ ] 双方提交 YDK 后能收到 `duel_launch_neos`
 - [ ] `/neos/duelroom` 默认连接到 `7911`
+- [ ] 连锁结束后 `[data-testid="duel-chain-marker"]` 会清零
 
 ## 12. 后续建议
 

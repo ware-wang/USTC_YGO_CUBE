@@ -208,6 +208,35 @@ testMode 下建议：
 - `MSG_HINT`
 - 以及 `ygopro-msg-encode` 重编码后的 payload 是否与 neos-ts 期望完全一致
 
+### 7.3.4 效果处理后连锁标志残留 / 无法回到自由时点
+
+典型复现场景：
+
+- 通常召唤 `78010363` 黑森林的魔女
+- 发动 `53129443` 黑洞
+- 黑森林送入墓地后发动检索
+- 选择卡加入手牌后，墓地里的黑森林仍显示连锁标志，且无法继续操作
+
+排查顺序：
+
+1. 先看后端是否继续吐出完整连锁消息：
+   - `YGOProMsgChaining`
+   - `YGOProMsgChainSolved`
+   - `YGOProMsgChainEnd`
+   - 后续新的 `YGOProMsgSelectIdleCmd`
+2. 如果停在 `CONFIRM_CARDS` 附近，优先检查 `DuelSession.advance()` 是否在普通 game message 后因为非 0 `status` 提前 done。
+3. 如果后端消息完整，但前端仍有标志残留，再查：
+   - `neos-client/src/service/duel/chaining.ts`
+   - `neos-client/src/service/duel/chainSolved.ts`
+   - `neos-client/src/service/duel/chainEnd.ts`
+   - `placeStore.inner[*].*.chainIndex`
+
+当前修复后的预期：
+
+- `CHAIN_END` 后 DOM 中 `[data-testid="duel-chain-marker"]` 应为 0
+- 阶段控件 `duel-phase-select` 应恢复可用
+- `chainEnd.ts` 会兜底清空所有位置的 `chainIndex`
+
 ### 7.4 某些卡在日志中被跳过
 
 这通常是缺 Lua 脚本。先看：
