@@ -15,7 +15,7 @@ import {
   STOC_JOIN_GAME, STOC_CHAT, STOC_HS_PLAYER_ENTER, STOC_HS_PLAYER_CHANGE,
   STOC_TYPE_CHANGE, STOC_DUEL_START, STOC_DUEL_END, STOC_GAME_MSG,
   STOC_ERROR_MSG,
-  parsePlayerInfo, parseJoinGame, parseUpdateDeck, parseResponse,
+  parsePlayerInfo, parseJoinGame, parseUpdateDeck, parseResponse, parseChatMessage,
   buildStocJoinGame, buildStocTypeChange, buildStocHsPlayerEnter,
   buildStocHsPlayerChange, buildStocDuelStart, buildStocDuelEnd,
   buildStocGameMsg, buildStocChat, buildStocErrorMsg,
@@ -44,6 +44,7 @@ let duelOptions = { scriptPath: null, cardsCdbPath: null };
  * @property {string} passWd
  * @property {PendingPlayer[]} players
  * @property {{main: number[], extra: number[]}[]|null} preloadedDecks  // if preloaded from cube-draft
+ * @property {boolean} testMode
  * @property {object|null} session
  * @property {string|null} sessionId
  * @property {{main: number[], extra: number[], side: number[]}[]} clientDecks // decks from neos-ts UPDATE_DECK
@@ -60,6 +61,7 @@ function getOrCreateRoom(passWd) {
       passWd,
       players: [],
       preloadedDecks: null,
+      testMode: false,
       session: null,
       sessionId: null,
       clientDecks: [],
@@ -73,9 +75,10 @@ function getOrCreateRoom(passWd) {
 /**
  * Register pre-loaded decks from cube-draft (called before players connect).
  */
-export function registerPreloadedDecks(passWd, decks) {
+export function registerPreloadedDecks(passWd, decks, options = {}) {
   const room = getOrCreateRoom(passWd);
   room.preloadedDecks = decks;
+  room.testMode = options.testMode === true;
   console.log(`[ygopro-ws] Registered preloaded decks for room "${passWd}"`);
   return room;
 }
@@ -258,6 +261,14 @@ export function handleYgoproConnection(ws, options = {}) {
           case CTOS_RESPONSE: {
             // Forward raw response buffer to DuelSession
             if (currentRoom?.session) {
+              const waitingPlayer = currentRoom.session.waitingResponsePlayer;
+              if (waitingPlayer === 0 || waitingPlayer === 1) {
+                const expectedPlayer = currentRoom.players[waitingPlayer];
+                if (expectedPlayer?.ws !== ws) {
+                  console.warn(`[ygopro-ws] Ignoring response from ${playerName}; waiting for player ${waitingPlayer}`);
+                  break;
+                }
+              }
               const responseBuf = parseResponse(exData);
               currentRoom.session.sendResponse(responseBuf);
             }
@@ -277,12 +288,18 @@ export function handleYgoproConnection(ws, options = {}) {
           case CTOS_CHAT: {
             // Relay chat to other player
             if (currentRoom) {
-              // Format: 2B type | 2B len | len*2 bytes msg UTF-16LE
+              const message = parseChatMessage(exData);
+              if (!message) break;
+
+              const pkt = buildStocChat(playerPosition, message);
               const otherPos = 1 - playerPosition;
               const otherPlayer = currentRoom.players[otherPos];
-              if (otherPlayer?.ws && exData.length >= 4) {
-                // Forward raw chat packet directly
-                otherPlayer.ws.send(encodePacket(STOC_CHAT, exData));
+              if (otherPlayer?.ws) {
+                otherPlayer.ws.send(pkt);
+              }
+              const selfPlayer = currentRoom.players[playerPosition];
+              if (selfPlayer?.ws) {
+                selfPlayer.ws.send(pkt);
               }
             }
             break;
@@ -386,6 +403,7 @@ async function startDuel(room) {
         start_hand: 5,
         draw_count: 1,
         duel_rule: 5, // master rule
+        testMode: room.testMode === true,
       },
       options: {
         scriptPath: duelOptions.scriptPath || null,
@@ -430,6 +448,16 @@ async function startDuel(room) {
     session.on('select', (msg) => {
       // Select messages also go through STOC_GAME_MSG
       // Format: { type: 'response'|'retry', data: { raw: 'base64...', _rawBuf: <Buffer> } }
+      const playerPayloads = msg?.data?.playerPayloads;
+      if (Array.isArray(playerPayloads)) {
+        for (const view of playerPayloads) {
+          const player = room.players[view.player];
+          if (!player?.ws || player.ws.readyState !== 1 || !view.raw) continue;
+          player.ws.send(buildStocGameMsg(Buffer.from(view.raw, 'base64')));
+        }
+        return;
+      }
+
       const raw = msg?.data?._rawBuf || msg?.data?.raw;
       let rawBuf = null;
       if (Buffer.isBuffer(raw)) {

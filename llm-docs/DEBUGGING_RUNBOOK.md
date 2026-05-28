@@ -140,6 +140,74 @@ lsof -iTCP:7911 -sTCP:LISTEN -n -P
 - 说明当前进程还是旧版本，或桥接代码没有生效
 - 直接重启 `server`
 
+### 7.3.2 能进入 `/neos/duel`，但棋盘像是“活的空界面”
+
+典型症状：
+
+- 能看到对战板块
+- 但无法正常进入抽卡/操作流程
+- 点聊天或投降也像没反应
+
+优先判断：
+
+- 这局对战是否在**开局后立即结束**
+- server 日志里是否很快出现：
+  - `[ygopro-ws] Duel ended, winner: player ...`
+
+如果是：
+
+- 先不要把问题归因到 `/duel` 页面按钮
+- 更可能是预加载进对局的牌组本身不合法、过小，或被过滤脚本后几乎为空
+
+检查：
+
+- `DuelSession` 日志里的：
+  - `Player 0 raw deck: main=...`
+  - `Player 1 raw deck: main=...`
+- 如果主卡组不是一个合理数量，先回到 battle lobby 检查提交内容
+
+testMode 下建议：
+
+- 优先点 `测试模式：一键提交合法卡组`
+- 或让 server 自动补足调试牌组
+
+额外检查：
+
+- 看 server 日志中的：
+  - `Player X raw deck: main=...`
+  - `Player X loaded deck after script filter: main=..., extra=..., testMode=...`
+
+如果 `raw deck` 是 40，但 `loaded deck after script filter` 很小：
+
+- 说明卡被 Lua 脚本过滤掉了
+- 当前版本在 `testMode` 下会继续自动补足到真正可开局的 40 张
+- 如果仍然没有补足成功，优先检查本地 `ygopro/script/` 是否完整
+
+### 7.3.3 已进入 `主要阶段 1`，但仍然像“不能操作”
+
+这说明：
+
+- 后端起局链大概率已经通了
+- 重点转向 duel 内可操作消息兼容
+
+先检查浏览器黑盒 / DOM：
+
+- 是否已经存在 `HAND` 区 5 张手牌
+- 手牌的 `data-card-code` 是否非 0
+- 手牌或场上卡的 `data-card-idle-actions` 是否为空
+
+如果：
+
+- 手牌存在
+- `code` 正常
+- 但 `idle-actions` 基本为空
+
+那么优先继续查：
+
+- `MSG_SELECT_IDLE_CMD`
+- `MSG_HINT`
+- 以及 `ygopro-msg-encode` 重编码后的 payload 是否与 neos-ts 期望完全一致
+
 ### 7.4 某些卡在日志中被跳过
 
 这通常是缺 Lua 脚本。先看：
@@ -157,5 +225,6 @@ find ../ygopro/script -maxdepth 1 -type f | head
 - [ ] `/neos/` 正常
 - [ ] `node test-ygopro-ws.js` 通过
 - [ ] `STOC_DUEL_START` 后能看到 `STOC_GAME_MSG func=4`
+- [ ] duel 内 `CTOS_CHAT` 能回显为 `STOC_CHAT`
 - [ ] `POST /api/launch-duel` 返回 `/neos/duelroom`
 - [ ] DuelRoom 默认地址仍是 `<hostname>:7911`

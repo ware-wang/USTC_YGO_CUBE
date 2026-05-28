@@ -5,6 +5,29 @@
  */
 import { v4 as uuid } from 'uuid';
 
+const TEST_MODE_FALLBACK_MAIN_IDS = [
+  38033121, // Dark Magician Girl
+  71413901, // Breaker the Magical Warrior
+  77585513, // Jinzo
+  74131780, // Exiled Force
+  15341821, // Dandylion
+  29587993, // Mist Valley Apex Avian
+  47606319, // Gigantes
+  70095154, // Cyber Dragon
+  78010363, // Witch of the Black Forest
+  59793705, // Elemental HERO Bladedge
+  66768175, // Performapal Bot-Eyes Lizard
+  72989439, // Black Luster Soldier - Envoy of the Beginning
+  94689206, // Block Dragon
+  86676862, // Evil HERO Malicious Edge
+  5318639,  // Pot of Avarice
+  83764718, // Monster Reborn
+  12580477, // Raigeki
+  81439173, // Swords of Revealing Light
+  44095762, // Mirror Force
+  14087893, // Book of Moon
+];
+
 export class DuelManager {
   constructor() {
     this.tables = new Map();
@@ -48,9 +71,10 @@ export class DuelManager {
     const si = t.seats.indexOf(playerId);
     if (si < 0) return { error: '你不在该对战桌' };
     const p = parseYdk(ydk);
+    const deck = t.testMode ? normalizeDeckForTestMode(p) : p;
     if (t.checkDeckSize && (p.main.length < 40 || p.main.length > 60))
       return { error: `主卡组40-60张（当前${p.main.length}张）` };
-    t.decks[si] = p;
+    t.decks[si] = deck;
     const both = t.decks[0] && t.decks[1];
     if (both) t.state = 'ready';
     return { success: true, bothReady: both };
@@ -83,6 +107,7 @@ export class DuelManager {
     const t = this.tables.get(tableId);
     if (!t || !t.decks || !t.decks[0] || !t.decks[1]) return null;
     return {
+      testMode: t.testMode === true,
       players: [
         { id: t.seats[0], deck: t.decks[0] },
         { id: t.seats[1], deck: t.decks[1] },
@@ -110,4 +135,21 @@ function parseYdk(content) {
     if (id > 0) r[sec].push(id);
   }
   return r;
+}
+
+function normalizeDeckForTestMode(deck) {
+  const main = deck.main.length >= 40 ? [...deck.main] : [];
+  const extra = deck.extra.slice(0, 15);
+  const side = deck.side.slice(0, 15);
+  const fillers = TEST_MODE_FALLBACK_MAIN_IDS;
+
+  while (main.length < 40) {
+    main.push(fillers[main.length % fillers.length]);
+  }
+
+  return {
+    main: main.slice(0, 60),
+    extra,
+    side,
+  };
 }

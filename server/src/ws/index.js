@@ -323,6 +323,15 @@ async function launchNeosDuel(tableId, roomId) {
     return;
   }
 
+  const deckValidationError = validateNeosDecks(tableDecks);
+  if (deckValidationError) {
+    broadcastDuel(tableId, null, {
+      type: 'duel_launch_neos',
+      payload: { error: deckValidationError },
+    });
+    return;
+  }
+
   const passWd = `cube_${tableId.replace(/\W/g, '').slice(0, 14)}`;
 
   try {
@@ -330,7 +339,7 @@ async function launchNeosDuel(tableId, roomId) {
     registerPreloadedDecks(passWd, [
       { main: tableDecks.players[0].deck.main || [], extra: tableDecks.players[0].deck.extra || [], side: [] },
       { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [], side: [] },
-    ]);
+    ], { testMode: tableDecks.testMode === true });
 
     const neosUrl = '/neos/duelroom';
     const p1Name = findClientByPlayer(roomId, tableDecks.players[0].id)?.playerName || 'Player1';
@@ -355,6 +364,26 @@ async function launchNeosDuel(tableId, roomId) {
       payload: { error: '启动对战房间失败: ' + e.message },
     });
   }
+}
+
+function validateNeosDecks(tableDecks) {
+  for (let i = 0; i < tableDecks.players.length; i++) {
+    const deck = tableDecks.players[i]?.deck;
+    const mainCount = deck?.main?.length || 0;
+    const extraCount = deck?.extra?.length || 0;
+    const sideCount = deck?.side?.length || 0;
+
+    if (mainCount < 40 || mainCount > 60) {
+      return `玩家${i + 1} 的主卡组需要 40-60 张，当前为 ${mainCount} 张。`;
+    }
+    if (extraCount > 15) {
+      return `玩家${i + 1} 的额外卡组最多 15 张，当前为 ${extraCount} 张。`;
+    }
+    if (sideCount > 15) {
+      return `玩家${i + 1} 的副卡组最多 15 张，当前为 ${sideCount} 张。`;
+    }
+  }
+  return null;
 }
 
 function handleDuelStart(ws, { tableId }) {

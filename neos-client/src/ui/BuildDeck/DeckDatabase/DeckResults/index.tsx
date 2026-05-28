@@ -162,22 +162,32 @@ const MdproDeckBlock: React.FC<{
 };
 
 export const updateMdproDeck = async () => {
-  const resp = await pullDecks({
-    page: store.page,
-    size: PAGE_SIZE,
-    keyWord: store.query !== "" ? store.query : undefined,
-    sortLike: SORT_LIKE,
-  });
+  try {
+    const resp = await pullDecks({
+      page: store.page,
+      size: PAGE_SIZE,
+      keyWord: store.query !== "" ? store.query : undefined,
+      sortLike: SORT_LIKE,
+    });
 
-  if (resp?.data) {
-    const { total, records: newDecks } = resp.data;
-    store.total = total;
-    store.decks = newDecks;
-  } else {
+    if (resp?.data) {
+      const { total, records: newDecks } = resp.data;
+      store.total = total;
+      store.decks = newDecks;
+    } else {
+      store.total = 0;
+      store.decks = [];
+    }
+  } catch (error) {
+    console.warn(
+      "Failed to fetch online deck list; continuing with local decks only.",
+      error,
+    );
+    store.total = 0;
     store.decks = [];
+  } finally {
+    finishLoaded();
   }
-
-  finishLoaded();
 };
 
 const updatePersonalList = async (message: MessageInstance) => {

@@ -153,6 +153,16 @@ export function parseResponse(exData) {
   return Buffer.from(exData);
 }
 
+/**
+ * Parse CTOS_CHAT from neos-ts.
+ * Payload is a UTF-16LE string, usually null-terminated.
+ */
+export function parseChatMessage(exData) {
+  return Buffer.from(exData)
+    .toString('utf16le')
+    .replace(/\u0000+$/, '');
+}
+
 // ── STOC builders ─────────────────────────────
 
 /**
@@ -285,18 +295,14 @@ export function buildStocGameMsg(rawOcgMsg) {
 
 /**
  * STOC_CHAT: send chat message.
- * Format: 2B player | 2B len | len*2 bytes msg UTF-16LE
+ * Format expected by neos-ts:
+ *   2B player | UTF-16LE bytes message
  */
 export function buildStocChat(player, message) {
-  const msgBuf = Buffer.alloc(message.length * 2 + 2);
-  writeUtf16LE(msgBuf, 0, message, message.length);
-  // Trim trailing zeros
-  const trimmed = msgBuf.slice(0, message.length * 2);
-
-  const buf = Buffer.alloc(4 + trimmed.length);
+  const msgBuf = Buffer.from(message || '', 'utf16le');
+  const buf = Buffer.alloc(2 + msgBuf.length);
   buf.writeUInt16LE(player, 0);
-  buf.writeUInt16LE(message.length, 2);
-  trimmed.copy(buf, 4);
+  msgBuf.copy(buf, 2);
 
   return encodePacket(STOC_CHAT, buf);
 }

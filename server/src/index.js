@@ -26,9 +26,8 @@ async function main() {
 
   // Init duel bridge (ocgcore WASM)
   try {
-    // DirCardReader needs the sql.js module itself (not a database instance)
-    const sqlJsModule = (await import('sql.js')).default;
-    duelBridge.init(sqlJsModule);
+    const initSqlJs = (await import('sql.js')).default;
+    duelBridge.init(await initSqlJs());
     console.log('[DuelBridge] Ready');
   } catch (e) {
     console.warn('[DuelBridge] Init failed (dueling unavailable):', e.message);
@@ -211,6 +210,9 @@ async function main() {
       res.setHeader('Access-Control-Allow-Origin', '*');
     },
   }));
+  app.get('/ygopro-database/pics/:id.jpg', (req, res) => {
+    res.redirect(302, `https://images.ygoprodeck.com/images/cards/${req.params.id}.jpg`);
+  });
 
   // ── neos-ts (YGOPro web duel client) ──────────
   // neos-ts production build uses assetsPath="/neos-assets" internally

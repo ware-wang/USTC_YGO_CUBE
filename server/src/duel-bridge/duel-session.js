@@ -21,20 +21,39 @@ import { join } from 'node:path';
 
 // Force CJS version (Node.js fetch doesn't support file:// for WASM loading)
 const require = createRequire(import.meta.url);
-const { createOcgcoreWrapper, DirScriptReaderEx, DirCardReader, _OcgcoreConstants } = require('koishipro-core.js');
+const { createOcgcoreWrapper, DirScriptReaderEx, DirCardReader, OcgcoreDuelOptionFlag, _OcgcoreConstants } = require('koishipro-core.js');
 import {
   YGOProMessages,
   YGOProMsgRetry,
   YGOProMsgResponseBase,
   YGOProMsgWin,
+  YGOProMsgWaiting,
 } from 'ygopro-msg-encode';
 
 const { OcgcoreScriptConstants } = _OcgcoreConstants;
 
-// ── Duel options flags ────────────────────────
-const DUEL_SINGLE = 0x20;
-const DUEL_MATCH = 0x40;
-const DUEL_TAG = 0x80;
+const TEST_MODE_SCRIPTED_FALLBACK_MAIN_IDS = [
+  38033121, // Dark Magician Girl
+  71413901, // Breaker the Magical Warrior
+  77585513, // Jinzo
+  74131780, // Exiled Force
+  15341821, // Dandylion
+  29587993, // Mist Valley Apex Avian
+  47606319, // Gigantes
+  70095154, // Cyber Dragon
+  78010363, // Witch of the Black Forest
+  59793705, // Elemental HERO Bladedge
+  66768175, // Performapal Bot-Eyes Lizard
+  72989439, // Black Luster Soldier - Envoy of the Beginning
+  94689206, // Block Dragon
+  86676862, // Evil HERO Malicious Edge
+  5318639,  // Pot of Avarice
+  83764718, // Monster Reborn
+  12580477, // Raigeki
+  81439173, // Swords of Revealing Light
+  44095762, // Mirror Force
+  14087893, // Book of Moon
+];
 
 export class DuelSession extends EventEmitter {
   #ocgcore = null;
@@ -44,6 +63,8 @@ export class DuelSession extends EventEmitter {
   #turnCount = 0;
   #turnPlayer = 0;
   #currentPhase = 0;
+  #lastResponseMsg = null;
+  #lastResponsePlayer = null;
 
   constructor({ decks, hostinfo, scriptPath, cardsCdbPath, seed }) {
     super();
@@ -53,12 +74,16 @@ export class DuelSession extends EventEmitter {
     this.cardsCdbPath = cardsCdbPath;
     this.seed = seed || Date.now();
     this.loadedDecks = Array.from({ length: 2 }, () => ({ main: [], extra: [] }));
+    this.testMode = hostinfo?.testMode === true;
   }
 
   get active() { return this.#active; }
   get turnCount() { return this.#turnCount; }
   get turnPlayer() { return this.#turnPlayer; }
   get currentPhase() { return this.#currentPhase; }
+  get waitingResponsePlayer() {
+    return this.#waitingResponse ? this.#lastResponsePlayer : null;
+  }
   getDeckSizes() {
     return this.loadedDecks.map((deck) => ({
       main: deck.main.length,
@@ -106,6 +131,9 @@ export class DuelSession extends EventEmitter {
         if (!hasScript) missingScripts.push(code);
         return hasScript;
       });
+      if (this.testMode && main.length < 40) {
+        fillDeckWithScriptedFallback(main, this.scriptPath, 40);
+      }
       if (missingScripts.length > 0) {
         console.warn(`[DuelSession] Skipping ${missingScripts.length} main-deck cards without scripts: ${missingScripts.slice(0, 10).join(',')}${missingScripts.length > 10 ? '...' : ''}`);
       }
@@ -139,14 +167,15 @@ export class DuelSession extends EventEmitter {
         main: [...main].reverse(),
         extra: [...extra].reverse(),
       };
+      console.log(`[DuelSession] Player ${player} loaded deck after script filter: main=${this.loadedDecks[player].main.length}, extra=${this.loadedDecks[player].extra.length}, testMode=${this.testMode}`);
     }
 
-    // Calculate and apply duel options
-    let opt = DUEL_SINGLE;
-    if (this.hostinfo.duel_rule >= 5) {
-      opt |= (this.hostinfo.duel_rule - 4) << 6;
-    }
-    this.#duel.startDuel(opt);
+    // Calculate and apply duel options. Keep this aligned with srvpro2:
+    // duel_rule lives in the high 16 bits; 0x20 is TagMode, not Single mode.
+    this.#duel.startDuel({
+      rule: this.hostinfo.duel_rule,
+      flags: this.hostinfo.mode & 0x2 ? [OcgcoreDuelOptionFlag.TagMode] : [],
+    });
     this.#active = true;
   }
 
@@ -203,17 +232,35 @@ export class DuelSession extends EventEmitter {
     // Track turn/phase changes
     if (msg.constructor.name === 'YGOProMsgNewTurn') {
       const tp = msg.player;
+      const rawBuf = Buffer.from(msg.toPayload());
       if (!(tp & 0x2)) {
         this.#turnCount++;
         this.#turnPlayer = tp & 0x1;
-        this.emit('gameMsg', { type: 'newTurn', data: { turn: this.#turnCount, player: this.#turnPlayer } });
+        this.emit('gameMsg', {
+          type: 'newTurn',
+          data: {
+            turn: this.#turnCount,
+            player: this.#turnPlayer,
+            raw: rawBuf.toString('base64'),
+            _rawBuf: rawBuf,
+          },
+        });
+      } else {
+        this.emit('gameMsg', {
+          type: 'newTurn',
+          data: { raw: rawBuf.toString('base64'), _rawBuf: rawBuf },
+        });
       }
       return false;
     }
 
     if (msg.constructor.name === 'YGOProMsgNewPhase') {
       this.#currentPhase = msg.phase;
-      this.emit('gameMsg', { type: 'newPhase', data: { phase: msg.phase } });
+      const rawBuf = Buffer.from(msg.toPayload());
+      this.emit('gameMsg', {
+        type: 'newPhase',
+        data: { phase: msg.phase, raw: rawBuf.toString('base64'), _rawBuf: rawBuf },
+      });
       return false;
     }
 
@@ -221,21 +268,37 @@ export class DuelSession extends EventEmitter {
     if (msg instanceof YGOProMsgRetry) {
       this.#waitingResponse = true;
       const rawBuf = Buffer.from(msg.toPayload());
-      this.emit('select', { type: 'retry', data: { raw: rawBuf.toString('base64'), _rawBuf: rawBuf } });
+      const playerPayloads = this.#lastResponseMsg && (this.#lastResponsePlayer === 0 || this.#lastResponsePlayer === 1)
+        ? buildPlayerPayloads(this.#lastResponseMsg, this.#lastResponsePlayer)
+        : null;
+      this.emit('select', {
+        type: 'retry',
+        data: {
+          raw: rawBuf.toString('base64'),
+          _rawBuf: rawBuf,
+          responsePlayer: this.#lastResponsePlayer,
+          playerPayloads,
+        },
+      });
       return true;
     }
 
     // Response-required messages — wait for player
     if (msg instanceof YGOProMsgResponseBase) {
       this.#waitingResponse = true;
+      const responsePlayer = msg.responsePlayer ? msg.responsePlayer() : null;
       const rawBuf = Buffer.from(msg.toPayload());
+      this.#lastResponseMsg = msg;
+      this.#lastResponsePlayer = responsePlayer;
+      console.log(`[DuelSession] Waiting response: msg=${msg.constructor.name}, player=${responsePlayer}, bytes=${rawBuf.length}`);
       this.emit('select', {
         type: 'response',
         data: {
           msgType: msg.constructor.name,
           raw: rawBuf.toString('base64'),
           _rawBuf: rawBuf,
-          responsePlayer: msg.responsePlayer ? msg.responsePlayer() : null,
+          responsePlayer,
+          playerPayloads: buildPlayerPayloads(msg, responsePlayer),
         },
       });
       return true;
@@ -244,6 +307,8 @@ export class DuelSession extends EventEmitter {
     // MSG_WIN — duel ended
     if (msg instanceof YGOProMsgWin) {
       this.#active = false;
+      this.#lastResponseMsg = null;
+      this.#lastResponsePlayer = null;
       // Also send the raw WIN message
       const winRawBuf = Buffer.from(msg.toPayload());
       this.emit('gameMsg', {
@@ -286,6 +351,8 @@ export class DuelSession extends EventEmitter {
     if (!this.#active) return;
     this.#active = false;
     this.#waitingResponse = false;
+    this.#lastResponseMsg = null;
+    this.#lastResponsePlayer = null;
     this.emit('win', { player: 1 - player, reason: 0 }); // reason 0 = surrender
   }
 
@@ -321,4 +388,32 @@ export class DuelSession extends EventEmitter {
     this.#duel = null;
     this.#ocgcore = null;
   }
+}
+
+function fillDeckWithScriptedFallback(main, scriptPath, targetSize) {
+  const scriptedFallback = TEST_MODE_SCRIPTED_FALLBACK_MAIN_IDS.filter((code) =>
+    existsSync(join(scriptPath, `c${code}.lua`)),
+  );
+  if (scriptedFallback.length === 0) {
+    return;
+  }
+  while (main.length < targetSize) {
+    main.push(scriptedFallback[main.length % scriptedFallback.length]);
+  }
+}
+
+function buildPlayerPayloads(msg, responsePlayer) {
+  if (responsePlayer !== 0 && responsePlayer !== 1) {
+    return null;
+  }
+  const waiting = Buffer.from(new YGOProMsgWaiting().toPayload()).toString('base64');
+  return [0, 1].map((player) => {
+    const view = player === responsePlayer ? msg.playerView(player) : new YGOProMsgWaiting();
+    const raw = Buffer.from(view.toPayload());
+    return {
+      player,
+      raw: raw.toString('base64'),
+      waiting: raw.toString('base64') === waiting,
+    };
+  });
 }

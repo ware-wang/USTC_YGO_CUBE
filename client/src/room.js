@@ -9,6 +9,12 @@ const CARD_IMG_BASE = 'https://images.ygoprodeck.com/images/cards/';
 
 const T_MONSTER = 0x1, T_SPELL = 0x2, T_TRAP = 0x4;
 const T_FUSION = 0x40, T_SYNCHRO = 0x2000, T_XYZ = 0x800000, T_LINK = 0x4000000;
+const TEST_MODE_FALLBACK_MAIN_IDS = [
+  38033121, 71413901, 77585513, 74131780, 15341821,
+  29587993, 47606319, 70095154, 78010363, 59793705,
+  66768175, 72989439, 94689206, 86676862, 5318639,
+  83764718, 12580477, 81439173, 44095762, 14087893,
+];
 
 const RACE_NAMES = {
   0x1:'战士',0x2:'魔法师',0x4:'天使',0x8:'恶魔',0x10:'不死',0x20:'机械',
@@ -759,6 +765,44 @@ function buildYdk() {
     '!side\n' + ids(state.results.side).join('\n') + '\n';
 }
 
+function parseYdkCounts(content) {
+  const counts = { main: 0, extra: 0, side: 0 };
+  let section = 'main';
+  for (const line of (content || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('#extra')) { section = 'extra'; continue; }
+    if (trimmed.startsWith('!side') || trimmed.startsWith('#side')) { section = 'side'; continue; }
+    if (trimmed.startsWith('#') || trimmed.startsWith('!')) continue;
+    const id = parseInt(trimmed, 10);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    counts[section]++;
+  }
+  return counts;
+}
+
+function buildTestModeYdk() {
+  const mainIds = state.results.main
+    .filter(card => !isExtraType(card.type))
+    .map(card => card.id);
+  const extraIds = state.results.extra
+    .filter(card => isExtraType(card.type))
+    .slice(0, 15)
+    .map(card => card.id);
+  const sideIds = state.results.side.slice(0, 15).map(card => card.id);
+
+  const filledMain = mainIds.length >= 40 ? [...mainIds] : [];
+
+  while (filledMain.length < 40) {
+    filledMain.push(TEST_MODE_FALLBACK_MAIN_IDS[filledMain.length % TEST_MODE_FALLBACK_MAIN_IDS.length]);
+  }
+
+  return '#created by Cube Draft Test Mode\n#main\n' +
+    filledMain.slice(0, 60).join('\n') + '\n' +
+    '#extra\n' + extraIds.join('\n') + '\n' +
+    '!side\n' + sideIds.join('\n') + '\n';
+}
+
 function handleExportYdk() {
   const content = buildYdk();
   setText('ydkContent', content);
@@ -868,14 +912,48 @@ function renderBattleTables() {
       setTimeout(() => {
         const ta = el(`ydkInput_${t.id}`);
         const btn = el(`submitYdkBtn_${t.id}`);
-        if (ta && window._lastYdk) ta.value = window._lastYdk;
+        if (ta) {
+          ta.value = state.room?.testMode ? buildTestModeYdk() : (window._lastYdk || buildYdk());
+        }
         if (btn) btn.onclick = () => {
           const content = ta?.value?.trim();
           if (!content) { alert('请先粘贴 YDK 卡组内容'); return; }
+          if (!state.room?.testMode) {
+            const counts = parseYdkCounts(content);
+            if (counts.main < 40 || counts.main > 60) {
+              alert('浏览器对战要求主卡组为 40-60 张；当前为 ' + counts.main + ' 张。');
+              return;
+            }
+            if (counts.extra > 15) {
+              alert('浏览器对战要求额外卡组最多 15 张；当前为 ' + counts.extra + ' 张。');
+              return;
+            }
+            if (counts.side > 15) {
+              alert('浏览器对战要求副卡组最多 15 张；当前为 ' + counts.side + ' 张。');
+              return;
+            }
+          }
           wsSend('battle_submit_deck', { tableId: t.id, ydkContent: content });
           if (btn) btn.textContent = '已提交';
           if (ta) ta.disabled = true;
         };
+
+        if (state.room?.testMode) {
+          const quickBtn = document.createElement('button');
+          quickBtn.className = 'btn-secondary btn-sm';
+          quickBtn.style.marginLeft = '8px';
+          quickBtn.textContent = '测试模式：一键提交合法卡组';
+          quickBtn.onclick = () => {
+            const generated = buildTestModeYdk();
+            if (ta) ta.value = generated;
+            wsSend('battle_submit_deck', { tableId: t.id, ydkContent: generated });
+            if (btn) btn.textContent = '已提交';
+            if (ta) ta.disabled = true;
+            quickBtn.textContent = '已提交测试卡组';
+            quickBtn.disabled = true;
+          };
+          btn?.insertAdjacentElement('afterend', quickBtn);
+        }
       }, 100);
     }
 

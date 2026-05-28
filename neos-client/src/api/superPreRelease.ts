@@ -15,12 +15,12 @@ let superPreList: SuperPreInfo[] = [];
 
 export async function initSuperPrerelease() {
   const json = await (await fetch(config)).text();
-  const list: SuperPreInfo[] = JSON.parse(json);
-  superPreList = list;
+  const parsed = JSON.parse(json);
+  superPreList = Array.isArray(parsed) ? parsed : [];
 }
 
 export function isSuperReleaseCard(code: number): boolean {
-  if (superPreList.length === 0)
+  if (!Array.isArray(superPreList) || superPreList.length === 0)
     console.warn("Super pre release config has not been initialized!");
-  return superPreList.find(({ id }) => id === code) !== undefined;
+  return Array.isArray(superPreList) && superPreList.find(({ id }) => id === code) !== undefined;
 }
