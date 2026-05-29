@@ -387,6 +387,10 @@ async function startDuel(room) {
     console.log(`[ygopro-ws] Using client-submitted decks`);
   } else {
     // No decks available
+    console.error(
+      `[ygopro-ws] Cannot start duel for room "${room.passWd}": no usable decks ` +
+      `(preloaded=${room.preloadedDecks?.length || 0}, client0=${describeDeck(room.clientDecks[0])}, client1=${describeDeck(room.clientDecks[1])})`,
+    );
     for (const p of room.players) {
       if (p?.ws) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR → hardcoded "版本不匹配"
     }
@@ -488,7 +492,9 @@ async function startDuel(room) {
     });
 
     session.on('error', (err) => {
-      console.error(`[ygopro-ws] Duel error:`, err.message);
+      console.error(
+        `[ygopro-ws] Duel runtime error in room "${room.passWd}" session ${room.sessionId}: ${err.message}`,
+      );
       for (const p of room.players) {
         if (p?.ws) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
       }
@@ -504,13 +510,26 @@ async function startDuel(room) {
     console.log(`[ygopro-ws] Duel session ${room.sessionId} created successfully`);
 
   } catch (err) {
-    console.log(`[ygopro-ws] !!! Failed to start duel: ${err.message}`, err.stack);
+    console.error(
+      `[ygopro-ws] Failed to start duel for room "${room.passWd}" ` +
+      `(scriptPath=${duelOptions.scriptPath || '(unset)'}, cardsCdbPath=${duelOptions.cardsCdbPath || '(unset)'}): ${err.message}`,
+    );
+    if (err?.stack) {
+      console.error(err.stack);
+    }
     room.starting = false;
     room.session = null;
     for (const p of room.players) {
       if (p?.ws && p.ws.readyState === 1) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
     }
   }
+}
+
+function describeDeck(deck) {
+  if (!deck) return 'missing';
+  const main = Array.isArray(deck.main) ? deck.main.length : 0;
+  const extra = Array.isArray(deck.extra) ? deck.extra.length : 0;
+  return `main=${main},extra=${extra}`;
 }
 
 function buildMsgStartPayload(playerIndex, deckSizes, room) {

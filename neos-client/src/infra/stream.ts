@@ -12,7 +12,8 @@ export class WebSocketStream {
     ip: string,
     onWsOpen?: (conn: WebSocketStream, ev: Event) => any,
   ) {
-    this.ws = new WebSocket((ip.startsWith("127.") || ip.startsWith("localhost") || ip.startsWith("192.168.")) ? "ws://" + ip : "wss://" + ip);
+    const target = resolveWebSocketTarget(ip);
+    this.ws = new WebSocket(target);
     if (onWsOpen) {
       this.ws.onopen = (e) => onWsOpen(this, e);
     }
@@ -90,4 +91,13 @@ export class WebSocketStream {
   isClosed(): boolean {
     return this.ws.readyState === WebSocket.CLOSED;
   }
+}
+
+function resolveWebSocketTarget(ip: string): string {
+  if (/^wss?:\/\//i.test(ip)) {
+    return ip;
+  }
+
+  const scheme = window.location.protocol === "https:" ? "wss://" : "ws://";
+  return `${scheme}${ip}`;
 }

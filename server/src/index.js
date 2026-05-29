@@ -18,9 +18,14 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 const WORKSPACE_ROOT = path.join(REPO_ROOT, '..');
 
 // Paths for ocgcore resources
-const CARDS_CDB_PATH = path.join(__dirname, '..', 'data');
+const CARDS_CDB_PATH = resolveExistingPath(
+  process.env.CARDS_CDB_PATH,
+  process.env.YGOPRO_CDB_PATH,
+  path.join(__dirname, '..', 'data'),
+);
 const YGO_SCRIPT_PATH = resolveExistingPath(
   process.env.YGO_SCRIPT_PATH,
+  process.env.YGOPRO_SCRIPT_PATH,
   path.join(REPO_ROOT, 'ygopro', 'script'),
   path.join(WORKSPACE_ROOT, 'ygopro', 'script'),
 );
@@ -84,7 +89,10 @@ async function main() {
   const duelManager = new DuelManager();
 
   // WebSocket
-  const wss = createWSServer(httpServer, roomManager, duelManager, duelBridge);
+  const wss = createWSServer(httpServer, roomManager, duelManager, duelBridge, {
+    scriptPath: YGO_SCRIPT_PATH,
+    cardsCdbPath: CARDS_CDB_PATH,
+  });
 
   // REST API
   app.use(express.json({ limit: '2mb' }));

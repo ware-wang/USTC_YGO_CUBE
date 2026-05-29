@@ -424,3 +424,87 @@ npm run build
 调试注意：
 
 - 不要只用 `controller=0` 判断“自己的手牌”。neos 前端会根据 `MsgStart.playerType` 判断 `controller 0/1` 哪边是自己，后攻视角里自己的可操作手牌可能是 `controller=1`。
+
+---
+
+## 2026-05-28
+
+### 目标
+
+修复从另一台主机访问 `3131` 后，进入 `/neos/duelroom` 时出现 `websocket connect to <host>:7911 error` 的问题。
+
+### 根因
+
+`neos-client/src/infra/stream.ts` 之前按“是不是本地地址”猜测协议。  
+当页面是 `http://202.38.78.36:3131` 这类非本地地址时，会被强制拼成 `wss://202.38.78.36:7911`。  
+但当前 7911 实际运行的是明文 WebSocket 代理，所以握手失败。
+
+### 已修复
+
+- 改为按当前页面协议选择目标：
+  - `https:` -> `wss://`
+  - 其他 -> `ws://`
+- 同时允许显式传入 `ws://` / `wss://` 前缀
+
+### 验证
+
+- `neos-client` 重新构建通过
+- 产物已包含新的协议选择逻辑
+- HTTP 页面下访问远端主机时，不再误连 `wss://<host>:7911`
+
+### 继续修复：进入对战房后弹出“版本不匹配”
+
+现象：
+
+- 从另一台主机访问 `3131` 后，轮抽流程正常
+- 进入 `/neos/duelroom` / `/neos/duel` 时，前端弹出：
+  - `版本不匹配，请联系技术人员解决`
+
+真实根因：
+
+- 这条文案对应的是 neos 的 `ErrorType.VERSIONERROR`
+- 但服务端并没有真的校验 join version；它只是把多类 duel 启动失败都统一映射成了这个错误
+- 主进程 `server/src/index.js` 读取的是 `YGO_SCRIPT_PATH`
+- duel WebSocket 链路 `server/src/ws/index.js` 之前却单独读取 `YGOPRO_SCRIPT_PATH`，并在未设置时回退到一个错误的默认路径
+- 该默认路径实际被算成了仓库外的 `/home/admin/ygopro/script`
+- 结果是：
+  - 主进程启动日志看起来脚本路径正确
+  - 但真正进入 DuelSession 时读取了错误目录
+  - 所有卡被判成“没有脚本”，卡组被过滤空
+  - `ocgcore` 起局 `Aborted()`
+  - 前端最终收到 `VERSIONERROR`
+
+修复：
+
+- `server/src/index.js`
+  - 统一解析对战资源路径
+  - `YGO_SCRIPT_PATH` 与兼容别名 `YGOPRO_SCRIPT_PATH` 都支持
+  - `cards.cdb` 路径也统一收口后再传入 WebSocket 层
+- `server/src/ws/index.js`
+  - 不再自行拼默认脚本路径
+  - 改为直接使用主进程传入的 `scriptPath` / `cardsCdbPath`
+- `start.sh`
+  - 在保留 `YGO_SCRIPT_PATH` 的同时，自动导出：
+    - `YGOPRO_SCRIPT_PATH=$YGO_SCRIPT_PATH`
+  - 避免旧链路或旧脚本名再次把 duel 资源拆成两套
+- `server/src/duel-bridge/ygopro-ws.js`
+  - 补强 duel 启动失败日志
+  - 现在会明确打印：
+    - 是否缺牌组
+    - 启动时实际使用的 `scriptPath`
+    - 启动时实际使用的 `cardsCdbPath`
+
+验证：
+
+- 直接使用根目录 `./start.sh` 启动，不再手工追加 `YGOPRO_SCRIPT_PATH=...`
+- 运行 `server/test-ygopro-ws.js`
+- 现在可稳定看到：
+  - `DuelSession ... created successfully`
+  - `STOC_DUEL_START`
+- 不再出现之前那种“脚本全部缺失 -> Aborted() -> VERSIONERROR”的链路
+
+额外结论：
+
+- 这台服务器当前 `node -v` 仍是 `v18.20.4`
+- 它不是这次“版本不匹配”弹窗的直接根因，但仍然偏离 README 要求的 Node 20 基线
+- 后续仍建议把实际运行时对齐到 Node 20，减少 WASM / duel runtime 的潜在不稳定性

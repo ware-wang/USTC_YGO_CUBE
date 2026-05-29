@@ -95,11 +95,17 @@ node scripts/generate-cube.js
 ### 启动
 
 ```bash
-cd server
-npm start
+./start.sh
 ```
 
 服务器默认监听 `http://localhost:3131`。
+
+如果你想直接从 `server/` 目录启动，也可以：
+
+```bash
+cd server
+npm start
+```
 
 ### 自定义端口
 
@@ -114,6 +120,7 @@ PORT=8080 npm start
 - `YGO_SCRIPT_PATH`：Lua 脚本目录；未设置时会按顺序尝试：
   - `./ygopro/script`
   - `../ygopro/script`
+- `YGOPRO_SCRIPT_PATH`：兼容旧 duel WebSocket 启动链路的别名；当前 `start.sh` 会自动把它对齐到 `YGO_SCRIPT_PATH`
 
 ## 使用说明
 
@@ -305,8 +312,8 @@ cp /path/to/ygopro/cards.cdb ./server/data/
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v20.20.2/bin:$PATH"
-cd /srv/cube-draft/server
-PORT=3131 YGOPRO_PROXY_PORT=7911 npm start
+cd /srv/cube-draft
+PORT=3131 YGOPRO_PROXY_PORT=7911 ./start.sh
 ```
 
 正常日志至少应该看到：
@@ -334,12 +341,13 @@ After=network.target
 [Service]
 Type=simple
 User=www-data
-WorkingDirectory=/srv/cube-draft/server
+WorkingDirectory=/srv/cube-draft
 Environment=NODE_ENV=production
 Environment=PORT=3131
 Environment=YGOPRO_PROXY_PORT=7911
 Environment=YGO_SCRIPT_PATH=/srv/cube-draft/ygopro/script
-ExecStart=/usr/bin/node /srv/cube-draft/server/src/index.js
+Environment=YGOPRO_SCRIPT_PATH=/srv/cube-draft/ygopro/script
+ExecStart=/srv/cube-draft/start.sh
 Restart=always
 RestartSec=3
 

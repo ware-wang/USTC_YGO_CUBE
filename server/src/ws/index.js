@@ -7,16 +7,9 @@
  */
 
 import { WebSocketServer } from 'ws';
-import { parse as parseUrl, fileURLToPath } from 'url';
-import path from 'path';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { parse as parseUrl } from 'url';
 import { DRAFT_STATES } from '../draft/index.js';
 import { handleYgoproConnection } from '../duel-bridge/ygopro-ws.js';
-
-// Paths for ocgcore resources
-const YGO_SCRIPT_PATH = path.join(__dirname, '..', '..', '..', '..', 'ygopro', 'script');
-const CARDS_CDB_PATH = path.join(__dirname, '..', '..', 'data');
 
 /** Map ws → { roomId, playerId, playerName, duelSessionId?, duelPosition? } */
 const clients = new Map();
@@ -24,7 +17,7 @@ const clients = new Map();
 let duelManagerRef = null;
 let duelBridgeRef = null;
 
-export function createWSServer(httpServer, roomManager, duelManager, duelBridge) {
+export function createWSServer(httpServer, roomManager, duelManager, duelBridge, duelResourceOptions = {}) {
   duelManagerRef = duelManager;
   duelBridgeRef = duelBridge;
 
@@ -58,8 +51,8 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge)
   ygoproWss.on('connection', (ws) => {
     console.log('[WS-Duel] New ygopro binary connection');
     handleYgoproConnection(ws, {
-      scriptPath: process.env.YGOPRO_SCRIPT_PATH || YGO_SCRIPT_PATH,
-      cardsCdbPath: process.env.YGOPRO_CDB_PATH || CARDS_CDB_PATH,
+      scriptPath: duelResourceOptions.scriptPath || null,
+      cardsCdbPath: duelResourceOptions.cardsCdbPath || null,
     });
   });
 

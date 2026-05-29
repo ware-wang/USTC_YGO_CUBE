@@ -63,13 +63,19 @@ npm run build
 
 ## 4. 启动服务
 
-从 `server/` 启动：
+优先从仓库根目录启动：
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v20.20.2/bin:$PATH"
-cd server
-npm start
+./start.sh
 ```
+
+`start.sh` 会同时导出：
+
+- `YGO_SCRIPT_PATH`
+- `YGOPRO_SCRIPT_PATH`
+
+这样 duel WebSocket 链路和主进程会使用同一套 Lua 脚本目录。
 
 正常日志应包含：
 
@@ -298,8 +304,7 @@ curl http://localhost:3131/api/stats
 直接前台运行：
 
 ```bash
-cd server
-npm start
+./start.sh
 ```
 
 ### 单独验证 ygopro 二进制协议

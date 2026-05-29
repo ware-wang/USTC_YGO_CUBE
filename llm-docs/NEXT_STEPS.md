@@ -43,6 +43,9 @@
   - `/neos/duelroom -> /neos/duel` 可以进入
   - 手牌可以正确装载到 DOM
   - 主阶段通常召唤、普通魔法发动、墓地诱发检索、`CHAIN_SOLVED` / `CHAIN_END` 都能在真实 UI 里走通
+  - duel WebSocket 资源路径已统一，不再因为 `YGO_SCRIPT_PATH` / `YGOPRO_SCRIPT_PATH` 分裂导致假性“版本不匹配”
+- 其中一个旧问题已经处理：
+  - `DuelRoom` 现在按页面协议选择 `ws://` / `wss://`，不会再把 HTTP 部署误连成 `wss://<host>:7911`
 - 当前未完全覆盖的是：
   - 完整 cube-draft 业务流的浏览器自动化
   - 更多类型的 duel 主阶段动作消息兼容
@@ -96,6 +99,29 @@
 - `server/test-room-lifecycle.mjs`
 
 但这只是 duel 协议层测试，不是完整业务流测试。
+
+---
+
+## P1：把服务器运行时对齐到 Node 20
+
+### 现状
+
+- 当前服务器实测 `node -v` 是 `v18.20.4`
+- 本轮 duel 启动失败的直接根因已经修掉，但运行时仍然偏离 README 标注的 Node 20 基线
+
+### 建议
+
+- 安装可用的 Node 20
+- 让 `start.sh` / systemd / 实际 shell PATH 指向同一个 Node 20 可执行文件
+- 启动后再次核实：
+  - `node -v`
+  - `./start.sh`
+  - `server/test-ygopro-ws.js`
+
+### 完成标准
+
+- 服务前台和托管方式都实际运行在 Node 20
+- 不再出现“脚本路径修好了，但进程其实还跑在 Node 18”的环境偏差
 
 ---
 
