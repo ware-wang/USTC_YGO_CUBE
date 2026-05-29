@@ -117,6 +117,20 @@ async function main() {
     res.json({ results });
   });
 
+  app.post('/api/cards/script-status', (req, res) => {
+    const { ids } = req.body;
+    if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids required' });
+    if (!YGO_SCRIPT_PATH) return res.status(500).json({ error: 'YGO_SCRIPT_PATH 未配置，无法检查卡片脚本' });
+
+    const results = {};
+    for (const rawId of ids) {
+      const id = parseInt(rawId, 10);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      results[id] = existsSync(path.join(YGO_SCRIPT_PATH, `c${id}.lua`));
+    }
+    res.json({ results });
+  });
+
   // Get cube details
   app.get('/api/cubes/:name', (req, res) => {
     const cube = cubeManager.getCube(req.params.name);

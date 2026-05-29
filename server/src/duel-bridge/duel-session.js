@@ -32,29 +32,6 @@ import {
 
 const { OcgcoreScriptConstants } = _OcgcoreConstants;
 
-const TEST_MODE_SCRIPTED_FALLBACK_MAIN_IDS = [
-  38033121, // Dark Magician Girl
-  71413901, // Breaker the Magical Warrior
-  77585513, // Jinzo
-  74131780, // Exiled Force
-  15341821, // Dandylion
-  29587993, // Mist Valley Apex Avian
-  47606319, // Gigantes
-  70095154, // Cyber Dragon
-  78010363, // Witch of the Black Forest
-  59793705, // Elemental HERO Bladedge
-  66768175, // Performapal Bot-Eyes Lizard
-  72989439, // Black Luster Soldier - Envoy of the Beginning
-  94689206, // Block Dragon
-  86676862, // Evil HERO Malicious Edge
-  5318639,  // Pot of Avarice
-  83764718, // Monster Reborn
-  12580477, // Raigeki
-  81439173, // Swords of Revealing Light
-  44095762, // Mirror Force
-  14087893, // Book of Moon
-];
-
 export class DuelSession extends EventEmitter {
   #ocgcore = null;
   #duel = null;
@@ -125,19 +102,21 @@ export class DuelSession extends EventEmitter {
       console.log(`[DuelSession] Player ${player} raw deck: main=${deck.main?.length || 0}, extra=${deck.extra?.length || 0}`);
 
       // Filter cards without Lua scripts (prevents WASM crash)
-      const missingScripts = [];
-      const main = [...deck.main].reverse().filter(code => {
+      const missingMainScripts = [];
+      const main = [...deck.main].filter(code => {
         const hasScript = existsSync(join(this.scriptPath, `c${code}.lua`));
-        if (!hasScript) missingScripts.push(code);
+        if (!hasScript) missingMainScripts.push(code);
         return hasScript;
       });
-      if (this.testMode && main.length < 40) {
-        fillDeckWithScriptedFallback(main, this.scriptPath, 40);
+      shuffleInPlace(main, makePlayerShuffleSeed(this.seed, player));
+
+      if (missingMainScripts.length > 0) {
+        console.warn(`[DuelSession] Skipping ${missingMainScripts.length} main-deck cards without scripts: ${missingMainScripts.slice(0, 10).join(',')}${missingMainScripts.length > 10 ? '...' : ''}`);
       }
-      if (missingScripts.length > 0) {
-        console.warn(`[DuelSession] Skipping ${missingScripts.length} main-deck cards without scripts: ${missingScripts.slice(0, 10).join(',')}${missingScripts.length > 10 ? '...' : ''}`);
+      if (main.length < 40 || main.length > 60) {
+        throw new Error(`Player ${player} has ${main.length} usable main-deck cards after script filter; expected 40-60`);
       }
-      for (const code of main) {
+      for (const code of [...main].reverse()) {
         this.#duel.newCard({
           code, owner: player, player,
           location: OcgcoreScriptConstants.LOCATION_DECK,
@@ -146,15 +125,19 @@ export class DuelSession extends EventEmitter {
         });
       }
 
-      const extra = [...deck.extra].reverse().filter(code => {
+      const missingExtraScripts = [];
+      const extra = [...deck.extra].filter(code => {
         const hasScript = existsSync(join(this.scriptPath, `c${code}.lua`));
-        if (!hasScript) missingScripts.push(code);
+        if (!hasScript) missingExtraScripts.push(code);
         return hasScript;
       });
-      if (missingScripts.length > 0 && deck.extra?.length > 0) {
-        console.warn(`[DuelSession] Player ${player}: ${missingScripts.length} cards skipped (no Lua script)`);
+      if (missingExtraScripts.length > 0) {
+        console.warn(`[DuelSession] Skipping ${missingExtraScripts.length} extra-deck cards without scripts: ${missingExtraScripts.slice(0, 10).join(',')}${missingExtraScripts.length > 10 ? '...' : ''}`);
       }
-      for (const code of extra) {
+      if (extra.length > 15) {
+        throw new Error(`Player ${player} has ${extra.length} usable extra-deck cards after script filter; expected <=15`);
+      }
+      for (const code of [...extra].reverse()) {
         this.#duel.newCard({
           code, owner: player, player,
           location: OcgcoreScriptConstants.LOCATION_EXTRA,
@@ -164,8 +147,8 @@ export class DuelSession extends EventEmitter {
       }
 
       this.loadedDecks[player] = {
-        main: [...main].reverse(),
-        extra: [...extra].reverse(),
+        main: [...main],
+        extra: [...extra],
       };
       console.log(`[DuelSession] Player ${player} loaded deck after script filter: main=${this.loadedDecks[player].main.length}, extra=${this.loadedDecks[player].extra.length}, testMode=${this.testMode}`);
     }
@@ -404,18 +387,6 @@ export class DuelSession extends EventEmitter {
   }
 }
 
-function fillDeckWithScriptedFallback(main, scriptPath, targetSize) {
-  const scriptedFallback = TEST_MODE_SCRIPTED_FALLBACK_MAIN_IDS.filter((code) =>
-    existsSync(join(scriptPath, `c${code}.lua`)),
-  );
-  if (scriptedFallback.length === 0) {
-    return;
-  }
-  while (main.length < targetSize) {
-    main.push(scriptedFallback[main.length % scriptedFallback.length]);
-  }
-}
-
 function buildPlayerPayloads(msg, responsePlayer) {
   if (responsePlayer !== 0 && responsePlayer !== 1) {
     return null;
@@ -430,6 +401,31 @@ function buildPlayerPayloads(msg, responsePlayer) {
       waiting: raw.toString('base64') === waiting,
     };
   });
+}
+
+function makePlayerShuffleSeed(seed, player) {
+  const numericSeed = Number.isFinite(Number(seed)) ? Number(seed) : Date.now();
+  return ((numericSeed >>> 0) ^ Math.imul(player + 1, 0x9e3779b9)) >>> 0;
+}
+
+function shuffleInPlace(cards, seed) {
+  const random = mulberry32(seed);
+  for (let i = cards.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [cards[i], cards[j]] = [cards[j], cards[i]];
+  }
+  return cards;
+}
+
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function buildPlayerViewPayloads(msg) {

@@ -271,7 +271,18 @@ curl http://localhost:3131/api/stats
 
 - 两边是否都已经入座
 - 两边是否都提交了 YDK
-- 主卡组是否满足 40–60 张（非 testMode）
+- 主卡组是否满足 40–60 张（testMode 也会校验）
+- 额外卡组是否不超过 15 张
+- testMode 下提交的卡是否来自玩家自己的轮抽卡池
+- server 日志里是否提示“缺少 Lua 脚本，过滤后不足 40 张”
+
+testMode 下推荐使用：
+
+```text
+测试模式：从轮抽池随机组卡并提交
+```
+
+该按钮会先调用 `/api/cards/script-status` 检查 Lua 脚本，只从本次轮抽池里有脚本的主卡随机抽 40 张，并从有脚本的额外卡中抽最多 15 张。
 
 ### 9.4 某些卡报缺脚本
 
@@ -279,7 +290,21 @@ curl http://localhost:3131/api/stats
 
 - `Skipping ... cards without scripts`
 
-说明 `ygopro/script/` 里缺对应 Lua。项目当前策略是跳过并继续，不一定会阻止对战启动，但会影响具体卡牌效果。
+说明 `ygopro/script/` 里缺对应 Lua。当前策略是：
+
+- 主卡组缺脚本卡会被过滤。
+- 过滤后主卡组少于 40 张时，服务端会拒绝启动对战。
+- testMode 快速组卡会提前过滤缺脚本卡；如果有脚本的主卡不足 40 张，会留在轮抽页报错。
+- 额外卡组缺脚本卡会被过滤，额外卡组最多 15 张。
+
+如果 neos 弹出“版本不匹配”，不要先怀疑 Node/NVM。先看 server 日志是否有类似：
+
+```text
+Skipping 1 main-deck cards without scripts: 14575467
+Player 1 has 39 usable main-deck cards after script filter; expected 40-60
+```
+
+这表示真实原因是 Lua 脚本缺失导致可装载主卡不足。
 
 ### 9.5 连锁处理后卡住
 

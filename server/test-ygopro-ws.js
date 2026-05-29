@@ -6,9 +6,16 @@
  */
 
 import { WebSocket } from 'ws'; // requires installing ws package
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { cardDB } from './src/card-db/index.js';
 
 const WS_URL = 'ws://localhost:3131/ws-duel';
 const ROOM_PASS = 'testroom';
+const T_EXTRA = 0x40 | 0x2000 | 0x800000 | 0x4000000;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_SCRIPT_PATH = join(__dirname, '..', 'ygopro', 'script');
 
 // ── Packet helpers (mirrors protocol-adapter) ──
 
@@ -85,6 +92,7 @@ const PROTO_NAMES = {
 
 async function test() {
   console.log('=== YGOPro WS Protocol Integration Test ===\n');
+  const testDeck = await loadProtocolTestDeck();
 
   const p1 = new WebSocket(WS_URL);
   const p2 = new WebSocket(WS_URL);
@@ -125,19 +133,6 @@ async function test() {
 
   await sleep(500);
 
-  // Send UPDATE_DECK with some real card IDs
-  // Just use a few random card IDs for test (they won't form a valid deck but will test the flow)
-  const testDeck = [
-    89631139, // Blue-Eyes White Dragon
-    46986414, // Dark Magician
-    38033121, // Dark Magician Girl
-    23995346, // Red-Eyes B. Dragon
-    40374923, // Dark Hole
-    5318639,  // Pot of Avarice
-    81439173, // Swords of Revealing Light
-    44095762, // Mirror Force
-  ];
-
   p1.send(mkUpdateDeck(testDeck));
   p2.send(mkUpdateDeck(testDeck));
 
@@ -169,6 +164,23 @@ async function test() {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+async function loadProtocolTestDeck() {
+  await cardDB.init();
+  const scriptPath = process.env.YGO_SCRIPT_PATH || process.env.YGOPRO_SCRIPT_PATH || DEFAULT_SCRIPT_PATH;
+  const scriptedMainCards = cardDB.getByTypeMask(0x1 | 0x2 | 0x4, 10000)
+    .filter((card) => (card.type & T_EXTRA) === 0)
+    .filter((card) => existsSync(join(scriptPath, `c${card.id}.lua`)))
+    .slice(0, 40)
+    .map((card) => card.id);
+
+  if (scriptedMainCards.length < 40) {
+    throw new Error(`Need at least 40 main-deck cards with Lua scripts for protocol test; found ${scriptedMainCards.length} in ${scriptPath}`);
+  }
+
+  console.log(`Using ${scriptedMainCards.length} script-backed main-deck cards from ${scriptPath}`);
+  return scriptedMainCards;
 }
 
 test().then(() => {

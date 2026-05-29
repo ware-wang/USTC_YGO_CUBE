@@ -24,7 +24,7 @@ export class RoomManager {
       packsPerPlayer,
       cardsPerPack,
       testMode: testMode === true,
-      checkDeckSize: testMode !== true,  // test mode disables deck validation
+      checkDeckSize: true,
       draft,
       state: DRAFT_STATES.IDLE,
       chat: [],  // Array<{name, text, time}>

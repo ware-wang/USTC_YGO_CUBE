@@ -9,12 +9,6 @@ const CARD_IMG_BASE = 'https://images.ygoprodeck.com/images/cards/';
 
 const T_MONSTER = 0x1, T_SPELL = 0x2, T_TRAP = 0x4;
 const T_FUSION = 0x40, T_SYNCHRO = 0x2000, T_XYZ = 0x800000, T_LINK = 0x4000000;
-const TEST_MODE_FALLBACK_MAIN_IDS = [
-  38033121, 71413901, 77585513, 74131780, 15341821,
-  29587993, 47606319, 70095154, 78010363, 59793705,
-  66768175, 72989439, 94689206, 86676862, 5318639,
-  83764718, 12580477, 81439173, 44095762, 14087893,
-];
 
 const RACE_NAMES = {
   0x1:'战士',0x2:'魔法师',0x4:'天使',0x8:'恶魔',0x10:'不死',0x20:'机械',
@@ -759,10 +753,19 @@ function updateCounts() {
 
 function buildYdk() {
   const ids = (cards) => cards.map(c => c.id);
-  return '#created by Cube Draft\n#main\n' +
-    ids(state.results.main).join('\n') + '\n' +
-    '#extra\n' + ids(state.results.extra).join('\n') + '\n' +
-    '!side\n' + ids(state.results.side).join('\n') + '\n';
+  return buildYdkFromIds(
+    ids(state.results.main),
+    ids(state.results.extra),
+    ids(state.results.side),
+    'Cube Draft',
+  );
+}
+
+function buildYdkFromIds(mainIds, extraIds, sideIds, label) {
+  return '#created by ' + label + '\n#main\n' +
+    mainIds.join('\n') + '\n' +
+    '#extra\n' + extraIds.join('\n') + '\n' +
+    '!side\n' + sideIds.join('\n') + '\n';
 }
 
 function parseYdkCounts(content) {
@@ -781,26 +784,81 @@ function parseYdkCounts(content) {
   return counts;
 }
 
-function buildTestModeYdk() {
-  const mainIds = state.results.main
-    .filter(card => !isExtraType(card.type))
-    .map(card => card.id);
-  const extraIds = state.results.extra
-    .filter(card => isExtraType(card.type))
-    .slice(0, 15)
-    .map(card => card.id);
-  const sideIds = state.results.side.slice(0, 15).map(card => card.id);
+async function buildTestModeYdk() {
+  const allDrafted = getAllDraftedCards();
+  const mainCandidates = allDrafted.filter(card => !isExtraType(card.type));
+  const extraCandidates = allDrafted.filter(card => isExtraType(card.type));
 
-  const filledMain = mainIds.length >= 40 ? [...mainIds] : [];
-
-  while (filledMain.length < 40) {
-    filledMain.push(TEST_MODE_FALLBACK_MAIN_IDS[filledMain.length % TEST_MODE_FALLBACK_MAIN_IDS.length]);
+  if (mainCandidates.length < 40) {
+    throw new Error(
+      '轮抽卡池主卡组数量不够：需要至少 40 张可放入主卡组的卡，当前只有 ' +
+      mainCandidates.length + ' 张。额外卡 ' + extraCandidates.length + ' 张不能计入主卡组。',
+    );
   }
 
-  return '#created by Cube Draft Test Mode\n#main\n' +
-    filledMain.slice(0, 60).join('\n') + '\n' +
-    '#extra\n' + extraIds.join('\n') + '\n' +
-    '!side\n' + sideIds.join('\n') + '\n';
+  const scriptStatus = await fetchCardScriptStatus([...mainCandidates, ...extraCandidates].map(card => card.id));
+  const scriptedMainCandidates = mainCandidates.filter(card => scriptStatus.get(card.id) === true);
+  const scriptedExtraCandidates = extraCandidates.filter(card => scriptStatus.get(card.id) === true);
+
+  if (scriptedMainCandidates.length < 40) {
+    const missingMain = mainCandidates
+      .filter(card => scriptStatus.get(card.id) !== true)
+      .slice(0, 8)
+      .map(card => card.name ? card.name + '(' + card.id + ')' : String(card.id));
+    throw new Error(
+      '轮抽卡池可用于对战的主卡组数量不够：需要至少 40 张有 Lua 脚本的主卡组卡，当前只有 ' +
+      scriptedMainCandidates.length + ' 张。缺脚本主卡示例：' + (missingMain.join('、') || '无') + '。',
+    );
+  }
+
+  const mainIds = shuffleCopy(scriptedMainCandidates)
+    .slice(0, 40)
+    .map(card => card.id);
+  const extraIds = shuffleCopy(scriptedExtraCandidates)
+    .slice(0, 15)
+    .map(card => card.id);
+
+  return buildYdkFromIds(mainIds, extraIds, [], 'Cube Draft Test Mode Pool');
+}
+
+async function fetchCardScriptStatus(ids) {
+  const uniqueIds = [...new Set(ids.map(id => parseInt(id, 10)).filter(id => Number.isFinite(id) && id > 0))];
+  if (!uniqueIds.length) return new Map();
+
+  const res = await fetch('/api/cards/script-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: uniqueIds }),
+  });
+  let data = {};
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok || data.error) {
+    throw new Error(data.error || '无法检查卡片脚本状态，请确认服务端已启动且 YGO_SCRIPT_PATH 正确');
+  }
+
+  const result = new Map();
+  for (const [id, hasScript] of Object.entries(data.results || {})) {
+    result.set(parseInt(id, 10), hasScript === true);
+  }
+  return result;
+}
+
+function getAllDraftedCards() {
+  return [
+    ...state.results.pool,
+    ...state.results.main,
+    ...state.results.extra,
+    ...state.results.side,
+  ];
+}
+
+function shuffleCopy(cards) {
+  const copy = [...cards];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
 }
 
 function handleExportYdk() {
@@ -897,8 +955,8 @@ function renderBattleTables() {
       }
     }
 
-    // YDK submit area for seated players (in waiting state)
-    if ((t.state === 'waiting' || t.state === 'ready') && mySeat >= 0) {
+    // YDK submit area for seated players before both decks are ready.
+    if (t.state === 'waiting' && mySeat >= 0) {
       const ydkArea = document.createElement('div');
       ydkArea.style.marginTop = '10px';
       ydkArea.innerHTML = `
@@ -913,25 +971,28 @@ function renderBattleTables() {
         const ta = el(`ydkInput_${t.id}`);
         const btn = el(`submitYdkBtn_${t.id}`);
         if (ta) {
-          ta.value = state.room?.testMode ? buildTestModeYdk() : (window._lastYdk || buildYdk());
+          if (state.room?.testMode) {
+            ta.value = '';
+            ta.placeholder = '点击“测试模式：从轮抽池随机组卡并提交”会先检查 Lua 脚本，再生成可开局测试卡组';
+          } else {
+            ta.value = window._lastYdk || buildYdk();
+          }
         }
         if (btn) btn.onclick = () => {
           const content = ta?.value?.trim();
           if (!content) { alert('请先粘贴 YDK 卡组内容'); return; }
-          if (!state.room?.testMode) {
-            const counts = parseYdkCounts(content);
-            if (counts.main < 40 || counts.main > 60) {
-              alert('浏览器对战要求主卡组为 40-60 张；当前为 ' + counts.main + ' 张。');
-              return;
-            }
-            if (counts.extra > 15) {
-              alert('浏览器对战要求额外卡组最多 15 张；当前为 ' + counts.extra + ' 张。');
-              return;
-            }
-            if (counts.side > 15) {
-              alert('浏览器对战要求副卡组最多 15 张；当前为 ' + counts.side + ' 张。');
-              return;
-            }
+          const counts = parseYdkCounts(content);
+          if (counts.main < 40 || counts.main > 60) {
+            alert('浏览器对战要求主卡组为 40-60 张；当前为 ' + counts.main + ' 张。');
+            return;
+          }
+          if (counts.extra > 15) {
+            alert('浏览器对战要求额外卡组最多 15 张；当前为 ' + counts.extra + ' 张。');
+            return;
+          }
+          if (counts.side > 15) {
+            alert('浏览器对战要求副卡组最多 15 张；当前为 ' + counts.side + ' 张。');
+            return;
           }
           wsSend('battle_submit_deck', { tableId: t.id, ydkContent: content });
           if (btn) btn.textContent = '已提交';
@@ -942,14 +1003,25 @@ function renderBattleTables() {
           const quickBtn = document.createElement('button');
           quickBtn.className = 'btn-secondary btn-sm';
           quickBtn.style.marginLeft = '8px';
-          quickBtn.textContent = '测试模式：一键提交合法卡组';
-          quickBtn.onclick = () => {
-            const generated = buildTestModeYdk();
+          quickBtn.textContent = '测试模式：从轮抽池随机组卡并提交';
+          quickBtn.onclick = async () => {
+            let generated;
+            const originalText = quickBtn.textContent;
+            quickBtn.disabled = true;
+            quickBtn.textContent = '正在检查脚本...';
+            try {
+              generated = await buildTestModeYdk();
+            } catch (e) {
+              alert(e.message || '轮抽卡池数量不够，无法生成测试卡组');
+              quickBtn.disabled = false;
+              quickBtn.textContent = originalText;
+              return;
+            }
             if (ta) ta.value = generated;
             wsSend('battle_submit_deck', { tableId: t.id, ydkContent: generated });
             if (btn) btn.textContent = '已提交';
             if (ta) ta.disabled = true;
-            quickBtn.textContent = '已提交测试卡组';
+            quickBtn.textContent = '已提交轮抽池测试卡组';
             quickBtn.disabled = true;
           };
           btn?.insertAdjacentElement('afterend', quickBtn);

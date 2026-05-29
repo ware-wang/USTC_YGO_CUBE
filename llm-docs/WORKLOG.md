@@ -583,3 +583,73 @@ sed 's|localhost:3131|localhost:3132|' test-ygopro-ws.js | node --input-type=mod
 仍需补充：
 
 - 真实浏览器里专门复现“攻击宣言选择对手盖卡目标”，确认详情抽屉不会打开、按钮文案不再是 `?`。
+
+### testMode 改为从轮抽池生成测试卡组，并修正开局洗牌
+
+用户需求：
+
+- 轮抽完毕后的快速测试不再使用固定测试卡组。
+- 自动生成的测试卡组必须来自玩家本次轮抽得到的卡牌堆。
+- 主卡组与额外卡组要按卡片类型区分。
+- 主卡组 40-60 张，额外卡组最多 15 张。
+- 如果轮抽池里主卡组可用卡不足 40 张，要直接报数量不够。
+- 复查双方抽到的牌顺序相同的问题。
+
+根因：
+
+1. `client/src/room.js` 的 `buildTestModeYdk()` 会在主卡组不足时填入固定 `TEST_MODE_FALLBACK_MAIN_IDS`。
+2. `server/src/duel-manager/index.js` 在 testMode 下也会对提交的 YDK 做固定卡补足，导致“看起来来自轮抽池”，实际进对战的是保底卡组。
+3. `server/src/room/index.js` 会让 testMode 跳过卡组张数校验。
+4. `DuelSession` 装载卡组时没有对双方主卡组做独立洗牌；当双方提交相同固定列表时，抽牌顺序自然容易一致。
+
+修复：
+
+- `client/src/room.js`
+  - 移除固定测试卡组。
+  - testMode 快速提交改为从 `pool/main/extra/side` 汇总出的玩家轮抽池随机抽卡。
+  - 快速提交前调用 `/api/cards/script-status`，只从有 Lua 脚本的候选卡里抽卡。
+  - 主卡组只抽非额外类型且可装载的卡，固定抽 40 张。
+  - 额外卡组只抽融合/同调/超量/连接且可装载的卡，最多 15 张。
+  - 可进主卡组的卡少于 40 张时在页面直接报错。
+- `server/src/index.js`
+  - 新增 `/api/cards/script-status`，供浏览器生成 testMode 卡组前检查脚本存在性。
+- `server/src/duel-manager/index.js`
+  - 移除 testMode 固定卡补足。
+  - 所有模式都校验主卡组 40-60、额外/副卡组最多 15。
+  - 校验主卡组不能混入额外卡、额外卡组不能混入非额外卡。
+  - testMode 额外校验提交卡组是玩家轮抽池的子集。
+  - 对战桌双方 ready 后禁止重复提交，避免同一个 neos 密码被二次注册覆盖预装卡组。
+- `server/src/ws/index.js`
+  - 提交 YDK 时把当前 room 传入 `DuelManager`，用于服务端轮抽池校验。
+  - 只有卡组从未 ready 到首次 ready 时才启动 neos 房间。
+  - 注册 neos 预装房间前检查主卡组 Lua 脚本数量，缺脚本导致不足 40 时直接在轮抽页返回清晰错误。
+- `server/src/duel-bridge/duel-session.js`
+  - 移除脚本过滤后的固定保底补足。
+  - 装载进 ocgcore 前对每位玩家主卡组用不同 seed 洗牌。
+  - 脚本过滤后主卡组不足 40 张时明确报错，而不是伪装成“版本不匹配”的根因。
+- `server/test-ygopro-ws.js`
+  - 协议测试不再使用 8 张小卡组。
+  - 改为从本地 `cards.cdb` 和 `ygopro/script` 动态挑选 40 张可装载主卡组卡。
+- `client/src/room.html`
+  - `room.js` 版本号从 `v=5` 提到 `v=6`，避免浏览器继续用旧模块缓存。
+
+验证关注点：
+
+- testMode 快速提交后，提交的 YDK 应只包含该玩家轮抽池中的卡。
+- 如果当前房间参数导致每人总 picks 少于 40，快速提交应直接提示数量不够。
+- 如果轮抽池中有卡缺 Lua 脚本，快速提交应避开这些卡；避不开时应在轮抽页报“有脚本的主卡不足 40”。
+- 两名玩家即使提交同一组卡，`DuelSession` 装载前也会独立洗牌，不应再固定同顺序抽牌。
+
+后续复测问题：
+
+- 用户再次遇到 neos 里“版本不匹配”。
+- server 日志显示真正原因是某位玩家主卡组里出现 `14575467`，本机 `ygopro/script/c14575467.lua` 不存在。
+- `DuelSession` 过滤后主卡组从 40 张变成 39 张，所以启动失败。
+- 同一日志里 `cube_6dbfa2` 被注册了两次，说明 ready 后重复提交还会覆盖同一 neos 密码的预装卡组。
+
+追加修复：
+
+- testMode 快速按钮生成前改为调用 `/api/cards/script-status`。
+- 只从存在 Lua 脚本的轮抽池主卡里抽 40 张。
+- 服务端启动 neos 前也做脚本数量预检，避免缺脚本卡继续流入 neos 并显示误导性的版本错误。
+- 对战桌双方 ready 后禁止重复提交，`launchNeosDuel()` 只在首次 ready 时触发。

@@ -4,29 +4,9 @@
  * Actual dueling is handled externally (e.g. ygopro client).
  */
 import { v4 as uuid } from 'uuid';
+import cardDB from '../card-db/index.js';
 
-const TEST_MODE_FALLBACK_MAIN_IDS = [
-  38033121, // Dark Magician Girl
-  71413901, // Breaker the Magical Warrior
-  77585513, // Jinzo
-  74131780, // Exiled Force
-  15341821, // Dandylion
-  29587993, // Mist Valley Apex Avian
-  47606319, // Gigantes
-  70095154, // Cyber Dragon
-  78010363, // Witch of the Black Forest
-  59793705, // Elemental HERO Bladedge
-  66768175, // Performapal Bot-Eyes Lizard
-  72989439, // Black Luster Soldier - Envoy of the Beginning
-  94689206, // Block Dragon
-  86676862, // Evil HERO Malicious Edge
-  5318639,  // Pot of Avarice
-  83764718, // Monster Reborn
-  12580477, // Raigeki
-  81439173, // Swords of Revealing Light
-  44095762, // Mirror Force
-  14087893, // Book of Moon
-];
+const T_EXTRA = 0x40 | 0x2000 | 0x800000 | 0x4000000;
 
 export class DuelManager {
   constructor() {
@@ -44,7 +24,7 @@ export class DuelManager {
         id: tid, roomId: room.id,
         seats: [null, null], decks: [null, null],
         state: 'waiting', winner: null,
-        checkDeckSize: room.checkDeckSize !== false,
+        checkDeckSize: true,
         testMode: room.testMode === true,
       };
       this.tables.set(tid, table);
@@ -65,19 +45,24 @@ export class DuelManager {
     return { success: true, table: t };
   }
 
-  submitDeck(tableId, playerId, ydk) {
+  submitDeck(tableId, playerId, ydk, room = null) {
     const t = this.tables.get(tableId);
     if (!t) return { error: '对战桌不存在' };
     const si = t.seats.indexOf(playerId);
     if (si < 0) return { error: '你不在该对战桌' };
-    const p = parseYdk(ydk);
-    const deck = t.testMode ? normalizeDeckForTestMode(p) : p;
-    if (t.checkDeckSize && (p.main.length < 40 || p.main.length > 60))
-      return { error: `主卡组40-60张（当前${p.main.length}张）` };
+    const wasReady = Boolean(t.decks[0] && t.decks[1]);
+    if (wasReady) return { error: '双方卡组已提交并准备启动，请不要重复提交；如需换卡组，请重新创建对战桌' };
+    const deck = parseYdk(ydk);
+    const validationError = validateDeck(deck, {
+      room,
+      playerId,
+      requirePoolSubset: t.testMode === true,
+    });
+    if (validationError) return { error: validationError };
     t.decks[si] = deck;
-    const both = t.decks[0] && t.decks[1];
-    if (both) t.state = 'ready';
-    return { success: true, bothReady: both };
+    const bothReady = Boolean(t.decks[0] && t.decks[1]);
+    if (bothReady) t.state = 'ready';
+    return { success: true, bothReady, justBecameReady: bothReady && !wasReady };
   }
 
   getTablePublic(tableId, playerId) {
@@ -126,7 +111,7 @@ export class DuelManager {
 function parseYdk(content) {
   const r = { main: [], extra: [], side: [] };
   let sec = 'main';
-  for (const line of content.split('\n')) {
+  for (const line of (content || '').split('\n')) {
     const t = line.trim();
     if (t.startsWith('#extra') || t.startsWith('!extra')) { sec = 'extra'; continue; }
     if (t.startsWith('#side') || t.startsWith('!side')) { sec = 'side'; continue; }
@@ -137,19 +122,81 @@ function parseYdk(content) {
   return r;
 }
 
-function normalizeDeckForTestMode(deck) {
-  const main = deck.main.length >= 40 ? [...deck.main] : [];
-  const extra = deck.extra.slice(0, 15);
-  const side = deck.side.slice(0, 15);
-  const fillers = TEST_MODE_FALLBACK_MAIN_IDS;
-
-  while (main.length < 40) {
-    main.push(fillers[main.length % fillers.length]);
+function validateDeck(deck, { room, playerId, requirePoolSubset }) {
+  if (deck.main.length < 40 || deck.main.length > 60) {
+    return `主卡组40-60张（当前${deck.main.length}张）`;
+  }
+  if (deck.extra.length > 15) {
+    return `额外卡组最多15张（当前${deck.extra.length}张）`;
+  }
+  if (deck.side.length > 15) {
+    return `副卡组最多15张（当前${deck.side.length}张）`;
   }
 
-  return {
-    main: main.slice(0, 60),
-    extra,
-    side,
-  };
+  const sectionError = validateDeckSections(deck);
+  if (sectionError) return sectionError;
+
+  if (requirePoolSubset) {
+    const poolError = validateDeckIsFromDraftPool(deck, room, playerId);
+    if (poolError) return poolError;
+  }
+
+  return null;
+}
+
+function validateDeckSections(deck) {
+  for (const code of deck.main) {
+    const cardType = getCardType(code);
+    if (cardType.error) return cardType.error;
+    if (isExtraType(cardType.type)) {
+      return `卡片 ${code} 是额外卡组类型，不能放入主卡组`;
+    }
+  }
+  for (const code of deck.extra) {
+    const cardType = getCardType(code);
+    if (cardType.error) return cardType.error;
+    if (!isExtraType(cardType.type)) {
+      return `卡片 ${code} 不是额外卡组类型，不能放入额外卡组`;
+    }
+  }
+  return null;
+}
+
+function getCardType(code) {
+  const card = cardDB.getCardFull(code);
+  if (!card) {
+    return { error: `卡片数据库中找不到 ${code}` };
+  }
+  return { type: card.type };
+}
+
+function isExtraType(type) {
+  return (type & T_EXTRA) !== 0;
+}
+
+function validateDeckIsFromDraftPool(deck, room, playerId) {
+  const pool = room?.draft?.playerPools?.get(playerId);
+  if (!pool) {
+    return '找不到你的轮抽卡池，无法生成测试卡组';
+  }
+
+  const available = countCards(pool);
+  const submitted = countCards([...deck.main, ...deck.extra, ...deck.side]);
+
+  for (const [code, count] of submitted) {
+    const owned = available.get(code) || 0;
+    if (count > owned) {
+      return `测试卡组必须来自你的轮抽卡池：卡片 ${code} 提交 ${count} 张，但卡池只有 ${owned} 张`;
+    }
+  }
+
+  return null;
+}
+
+function countCards(cards) {
+  const counts = new Map();
+  for (const code of cards) {
+    counts.set(code, (counts.get(code) || 0) + 1);
+  }
+  return counts;
 }

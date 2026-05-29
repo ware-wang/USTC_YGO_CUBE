@@ -8,6 +8,8 @@
 
 import { WebSocketServer } from 'ws';
 import { parse as parseUrl } from 'url';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { DRAFT_STATES } from '../draft/index.js';
 import { handleYgoproConnection } from '../duel-bridge/ygopro-ws.js';
 
@@ -16,10 +18,12 @@ const clients = new Map();
 
 let duelManagerRef = null;
 let duelBridgeRef = null;
+let duelResourceOptionsRef = {};
 
 export function createWSServer(httpServer, roomManager, duelManager, duelBridge, duelResourceOptions = {}) {
   duelManagerRef = duelManager;
   duelBridgeRef = duelBridge;
+  duelResourceOptionsRef = duelResourceOptions || {};
 
   // ── Manual upgrade routing (noServer mode) ──
   const jsonWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
@@ -88,7 +92,7 @@ function handleMessage(ws, msg, roomManager) {
     case 'swap_seat': return handleSwapSeat(ws, payload, roomManager);
     case 'chat': return handleChat(ws, payload, roomManager);
     case 'duel_join_table': return handleDuelJoin(ws, payload);
-    case 'duel_submit_deck': return handleDuelSubmit(ws, payload);
+    case 'duel_submit_deck': return handleDuelSubmit(ws, payload, roomManager);
     case 'duel_start': return handleDuelStart(ws, payload);
     case 'duel_respond': return handleDuelRespond(ws, payload);
     case 'duel_get_state': return handleDuelGetState(ws, payload);
@@ -97,7 +101,7 @@ function handleMessage(ws, msg, roomManager) {
     case 'duel_surrender': return handleDuelSurrender(ws, payload);
     case 'battle_create_tables': return handleBattleCreate(ws, payload, roomManager);
     case 'battle_join_table': return handleDuelJoin(ws, payload);
-    case 'battle_submit_deck': return handleDuelSubmit(ws, payload);
+    case 'battle_submit_deck': return handleDuelSubmit(ws, payload, roomManager);
     case 'battle_start': return handleDuelStart(ws, payload);
     case 'battle_respond': return handleDuelRespond(ws, payload);
     case 'battle_get_state': return handleDuelGetState(ws, payload);
@@ -295,16 +299,17 @@ function handleDuelJoin(ws, { tableId, seatIndex }) {
   broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
 }
 
-async function handleDuelSubmit(ws, { tableId, ydkContent }) {
+async function handleDuelSubmit(ws, { tableId, ydkContent }, rm) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
-  const result = duelManagerRef.submitDeck(tableId, client.playerId, ydkContent);
+  const room = rm.getRoom(client.roomId);
+  const result = duelManagerRef.submitDeck(tableId, client.playerId, ydkContent, room);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
   send(ws, { type: 'duel_deck_submitted', payload: { success: true, bothReady: result.bothReady } });
   const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
   broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
 
-  if (result.bothReady) {
+  if (result.justBecameReady) {
     await launchNeosDuel(tableId, client.roomId);
   }
 }
@@ -321,6 +326,15 @@ async function launchNeosDuel(tableId, roomId) {
     broadcastDuel(tableId, null, {
       type: 'duel_launch_neos',
       payload: { error: deckValidationError },
+    });
+    return;
+  }
+
+  const scriptValidationError = validateNeosDeckScripts(tableDecks);
+  if (scriptValidationError) {
+    broadcastDuel(tableId, null, {
+      type: 'duel_launch_neos',
+      payload: { error: scriptValidationError },
     });
     return;
   }
@@ -376,6 +390,23 @@ function validateNeosDecks(tableDecks) {
       return `玩家${i + 1} 的副卡组最多 15 张，当前为 ${sideCount} 张。`;
     }
   }
+  return null;
+}
+
+function validateNeosDeckScripts(tableDecks) {
+  const scriptPath = duelResourceOptionsRef.scriptPath;
+  if (!scriptPath) return 'YGO_SCRIPT_PATH 未配置，无法检查卡片脚本';
+
+  for (let i = 0; i < tableDecks.players.length; i++) {
+    const deck = tableDecks.players[i]?.deck;
+    const main = deck?.main || [];
+    const missingMain = main.filter((code) => !existsSync(join(scriptPath, `c${code}.lua`)));
+    const usableMain = main.length - missingMain.length;
+    if (usableMain < 40) {
+      return `玩家${i + 1} 的主卡组有 ${missingMain.length} 张缺少 Lua 脚本，过滤后只有 ${usableMain} 张可装载卡，无法开局。请重新点击测试模式随机组卡，或检查 ygopro/script 是否完整。缺脚本示例：${missingMain.slice(0, 8).join(', ')}`;
+    }
+  }
+
   return null;
 }
 
