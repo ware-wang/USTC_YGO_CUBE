@@ -19,6 +19,7 @@ import {
 import { Container } from "@/container";
 import { getUIContainer } from "@/container/compat";
 import { eventbus, Task } from "@/infra";
+import { getVisibleCardId } from "@/service/utils/cardVisibility";
 import {
   cardStore,
   CardType,
@@ -330,6 +331,7 @@ export const Card: React.FC<{ idx: number }> = React.memo(({ idx }) => {
   // <<< 效果 <<<
 
   const location = snap.location;
+  const visibleCardId = getVisibleCardId(snap as CardType);
   const disabled = isCardDisabled(snap as CardType);
   const idleActions = snap.idleInteractivities
     .map(({ interactType }) => InteractType[interactType])
@@ -354,7 +356,7 @@ export const Card: React.FC<{ idx: number }> = React.memo(({ idx }) => {
     <animated.div
       data-testid="duel-card"
       data-card-uuid={snap.uuid}
-      data-card-code={snap.code}
+      data-card-code={visibleCardId}
       data-card-controller={location.controller}
       data-card-zone={ygopro.CardZone[location.zone]}
       data-card-zone-value={location.zone}
@@ -416,7 +418,7 @@ export const Card: React.FC<{ idx: number }> = React.memo(({ idx }) => {
         >
           <YgoCard
             className={styles.cover}
-            code={snap.code === 0 ? snap.meta.id : snap.code}
+            code={visibleCardId}
             disabled={disabled}
           />
           <YgoCard className={styles.back} isBack />

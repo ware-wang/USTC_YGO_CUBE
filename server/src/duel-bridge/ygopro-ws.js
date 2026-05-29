@@ -431,6 +431,16 @@ async function startDuel(room) {
     // Hook up events for relay
     session.on('gameMsg', (msg) => {
       // msg format: { type: '...', data: { raw: 'base64...', _rawBuf: <Buffer> } }
+      const playerPayloads = msg?.data?.playerPayloads;
+      if (Array.isArray(playerPayloads)) {
+        for (const view of playerPayloads) {
+          const player = room.players[view.player];
+          if (!player?.ws || player.ws.readyState !== 1 || !view.raw) continue;
+          player.ws.send(buildStocGameMsg(Buffer.from(view.raw, 'base64')));
+        }
+        return;
+      }
+
       const raw = msg?.data?._rawBuf || msg?.data?.raw;
       let rawBuf = null;
       if (Buffer.isBuffer(raw)) {

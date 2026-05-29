@@ -36,8 +36,8 @@ export default async (
       if (target) {
         // 设置code为0，洗切后的code会由`UpdateData`指定
         target.code = 0;
-        target.meta.id = 0;
-        target.meta.text.id = 0;
+        target.meta = { id: 0, data: {}, text: {} };
+        target.revealed = false;
       } else {
         console.warn(`<ShuffleSetCard>target from ${from} is null`);
       }

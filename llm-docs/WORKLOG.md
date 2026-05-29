@@ -508,3 +508,78 @@ npm run build
 - 这台服务器当前 `node -v` 仍是 `v18.20.4`
 - 它不是这次“版本不匹配”弹窗的直接根因，但仍然偏离 README 要求的 Node 20 基线
 - 后续仍建议把实际运行时对齐到 Node 20，减少 WASM / duel runtime 的潜在不稳定性
+
+---
+
+## 2026-05-29
+
+### 修复对手盖卡在选择目标时可被查看
+
+现象：
+
+- 对战中选择目标时，点击对手盖放的卡会打开卡片详情，并显示真实卡名/效果。
+- 攻击宣言等选择目标弹窗里的“确定/取消/完成选择”有时显示为 `?`。
+
+真实根因：
+
+1. `DuelSession` 对普通 `gameMsg` 仍然把 `msg.toPayload()` 的原始视角广播给双方，只有需要响应的 `select` 消息走了 `playerView(player)`。这会让移动、抽卡、放置等广播消息在某些情况下把对手视角不该知道的 `code` 送到前端。
+2. neos 前端选择卡弹窗和棋盘点击逻辑直接使用本地 `card.meta` / `card.code` 打开详情或渲染卡图，没有在展示层再次按当前玩家可见性做保护。
+3. 选择卡弹窗按钮直接读取 `Region.System` 的 `1211/1296/1295`，本地字符串缺失时就原样显示 `?`。
+
+修复：
+
+- `server/src/duel-bridge/duel-session.js`
+  - 普通 `gameMsg` 也生成 `playerPayloads`。
+  - 每位玩家收到的是 `msg.playerView(player).toPayload()`。
+  - 尊重 `msg.getSendTargets()`，例如只应给指定玩家看的 `CONFIRM_CARDS` 不再广播给双方。
+- `server/src/duel-bridge/ygopro-ws.js`
+  - `gameMsg` 和 `select` 一样，优先按 `playerPayloads` 分别发送。
+- `neos-client/src/service/utils/cardVisibility.ts`
+  - 新增统一可见性判断：
+    - 自己控制的卡可见。
+    - 被规则临时公开的卡可见，例如 `CONFIRM_CARDS` 确认窗口、盖伏卡发动连锁时。
+    - 对手手牌/卡组不可见。
+    - 对手额外、除外、怪兽区、魔陷区、衍生物区中的盖放卡不可见。
+- `neos-client/src/stores/cardStore.ts` 与 duel 消息处理
+  - 新增 `revealed` 状态，区分“这张卡现在被规则公开”和“只是本地曾经缓存过 meta”。
+  - `confirmCards` / `chaining` / `draw` / `updateData` 会按消息语义设置公开状态。
+  - `shuffleDeck` / `shuffleSetCard` / 隐藏视角的 `move` 会清除公开状态和缓存 meta。
+- `neos-client/src/service/utils/fetchCheckCardMeta.ts`
+  - 选择目标时，如果目标对当前玩家不可见，不再从本地 `target.meta` 回填真实卡号/效果描述。
+- `CardModal` / `CardListModal` / `SelectCardsModal` / `PlayMat/Card`
+  - 详情抽屉、列表抽屉、选择弹窗、棋盘卡图统一走可见性判断。
+  - 隐藏卡只显示卡背，`data-card-code` 也落为 `0`。
+- `SelectCardsModal`
+  - 当系统字符串返回 `?` 时，按钮文案回退到当前语言包的 `Menu.Confirm` / `Menu.Cancel` / `Menu.SelectionComplete`。
+
+验证：
+
+```bash
+cd neos-client
+npm run build
+npx eslint src/service/utils/cardVisibility.ts src/service/utils/fetchCheckCardMeta.ts src/service/utils/index.ts src/ui/Duel/Message/CardModal/index.tsx src/ui/Duel/Message/CardListModal/index.tsx src/ui/Duel/Message/SelectCardsModal/index.tsx src/ui/Duel/PlayMat/Card/index.tsx
+```
+
+```bash
+node --check server/src/duel-bridge/duel-session.js
+node --check server/src/duel-bridge/ygopro-ws.js
+```
+
+隔离端口协议联调：
+
+```bash
+PORT=3132 YGOPRO_PROXY_PORT=7912 ./start.sh
+cd server
+sed 's|localhost:3131|localhost:3132|' test-ygopro-ws.js | node --input-type=module
+```
+
+结果：
+
+- 临时服务可启动。
+- 两个模拟客户端可完成 join / ready / duel start。
+- `STOC_DUEL_START` 后仍能收到 `MSG_START`。
+- 同一类抽牌/隐藏信息消息里，行动方收到真实卡号，非可见方收到 `00000000...`，说明后端逐玩家视角裁剪已生效。
+
+仍需补充：
+
+- 真实浏览器里专门复现“攻击宣言选择对手盖卡目标”，确认详情抽屉不会打开、按钮文案不再是 `?`。

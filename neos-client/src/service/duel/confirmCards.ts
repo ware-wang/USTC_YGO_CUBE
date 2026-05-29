@@ -30,6 +30,7 @@ export default async (
       // 设置`occupant`
       const meta = fetchCard(card.code);
       target.meta = meta;
+      target.revealed = true;
 
       const zone = target.location.zone;
       const position = target.location.position;
@@ -53,10 +54,15 @@ export default async (
 
         // 恢复position
         target.location.position = position;
+        target.revealed = false;
+        if (target.code === 0) {
+          target.meta = { id: 0, data: {}, text: {} };
+        }
         await callCardMove(target.uuid);
       } else {
         // 这个分支是确认手卡或者卡组或者额外卡组的场景（大概）
         await callCardFocus(target.uuid);
+        target.revealed = false;
         if (target.code === 0) {
           // 如果是对方或者是在观战模式下双方展示手牌，target的code会是0，
           // 这里应该清掉meta，UI上表现是回复到卡背状态

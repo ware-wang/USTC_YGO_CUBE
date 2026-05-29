@@ -7,6 +7,10 @@ import { INTERNAL_Snapshot as Snapshot, useSnapshot } from "valtio";
 
 import { type CardMeta, Region, ygopro } from "@/api";
 import { fetchStrings } from "@/api";
+import {
+  getVisibleCardId,
+  isCardVisibleToCurrentPlayer,
+} from "@/service/utils/cardVisibility";
 import { CardType, isMe, matStore } from "@/stores";
 import { ScrollableArea, YgoCard } from "@/ui/Shared";
 
@@ -61,6 +65,7 @@ export const SelectCardsModal: React.FC<SelectCardsModalProps> = ({
   const minMaxText = min === max ? min : `${min}-${max}`;
 
   const { t: i18n } = useTranslation("SelectCardModal");
+  const { t: menuI18n } = useTranslation("Menu");
 
   useEffect(() => {
     const initial: [ygopro.CardZone, Option[]][] = grouped.map(([zone, _]) => [
@@ -102,9 +107,9 @@ export const SelectCardsModal: React.FC<SelectCardsModalProps> = ({
   }, [selectables]);
 
   // 文案
-  const [submitText, finishText, cancelText] = [1211, 1296, 1295].map((n) =>
-    fetchStrings(Region.System, n),
-  );
+  const submitText = systemTextOrFallback(1211, menuI18n("Confirm"));
+  const finishText = systemTextOrFallback(1296, menuI18n("SelectionComplete"));
+  const cancelText = systemTextOrFallback(1295, menuI18n("Cancel"));
 
   // Quick select if possiable
   const onQuickSelect = (option: Option) => {
@@ -203,49 +208,56 @@ export const SelectCardsModal: React.FC<SelectCardsModalProps> = ({
                     multiple
                     className={styles["check-group"]}
                   >
-                    {options[1].map((card, j) => (
-                      <Tooltip
-                        title={card.effectDesc}
-                        placement="bottom"
-                        key={j}
-                      >
-                        {/* 这儿必须有一个div，不然tooltip不生效 */}
-                        <div
-                          data-testid="duel-select-card-option"
-                          data-card-code={card.meta.id}
-                          data-card-controller={card.location?.controller}
-                          data-card-zone={
-                            card.location?.zone === undefined
-                              ? undefined
-                              : ygopro.CardZone[card.location.zone]
-                          }
-                          data-card-zone-value={card.location?.zone}
-                          data-card-sequence={card.location?.sequence}
-                          data-card-response={card.response}
-                          onDoubleClick={() => onQuickSelect(card as Option)}
+                    {options[1].map((card, j) => {
+                      const visible = isCardVisibleToCurrentPlayer(card);
+                      const visibleCardId = getVisibleCardId(card);
+
+                      return (
+                        <Tooltip
+                          title={visible ? card.effectDesc : undefined}
+                          placement="bottom"
+                          key={j}
                         >
-                          <CheckCard
-                            cover={
-                              <YgoCard
-                                code={card.meta.id}
-                                targeted={card.targeted}
-                                disabled={card.disabled}
-                                className={styles.card}
-                              />
+                          {/* 这儿必须有一个div，不然tooltip不生效 */}
+                          <div
+                            data-testid="duel-select-card-option"
+                            data-card-code={visibleCardId}
+                            data-card-controller={card.location?.controller}
+                            data-card-zone={
+                              card.location?.zone === undefined
+                                ? undefined
+                                : ygopro.CardZone[card.location.zone]
                             }
-                            className={classnames(styles["check-card"], {
-                              [styles.opponent]:
-                                card.location?.controller !== undefined &&
-                                !isMe(card.location.controller),
-                            })}
-                            value={card}
-                            onClick={() => {
-                              showCardModal(card);
-                            }}
-                          />
-                        </div>
-                      </Tooltip>
-                    ))}
+                            data-card-zone-value={card.location?.zone}
+                            data-card-sequence={card.location?.sequence}
+                            data-card-response={card.response}
+                            onDoubleClick={() => onQuickSelect(card as Option)}
+                          >
+                            <CheckCard
+                              cover={
+                                <YgoCard
+                                  code={visibleCardId}
+                                  targeted={card.targeted}
+                                  disabled={card.disabled}
+                                  className={styles.card}
+                                />
+                              }
+                              className={classnames(styles["check-card"], {
+                                [styles.opponent]:
+                                  card.location?.controller !== undefined &&
+                                  !isMe(card.location.controller),
+                              })}
+                              value={card}
+                              onClick={() => {
+                                if (visible) {
+                                  showCardModal(card);
+                                }
+                              }}
+                            />
+                          </div>
+                        </Tooltip>
+                      );
+                    })}
                   </CheckCard.Group>
                 </div>
               ),
@@ -258,29 +270,36 @@ export const SelectCardsModal: React.FC<SelectCardsModalProps> = ({
           </span>
         </p>
         <div className={styles["check-group"]}>
-          {selecteds.map((card, i) => (
-            <Tooltip
-              title={card.effectDesc}
-              placement="bottom"
-              key={grouped.length + i}
-            >
-              <div>
-                <Card
-                  cover={
-                    <YgoCard
-                      code={card.meta.id}
-                      targeted={card.targeted}
-                      className={styles.card}
-                    />
-                  }
-                  className={styles["check-card"]}
-                  onClick={() => {
-                    showCardModal(card);
-                  }}
-                />
-              </div>
-            </Tooltip>
-          ))}
+          {selecteds.map((card, i) => {
+            const visible = isCardVisibleToCurrentPlayer(card);
+            const visibleCardId = getVisibleCardId(card);
+
+            return (
+              <Tooltip
+                title={visible ? card.effectDesc : undefined}
+                placement="bottom"
+                key={grouped.length + i}
+              >
+                <div>
+                  <Card
+                    cover={
+                      <YgoCard
+                        code={visibleCardId}
+                        targeted={card.targeted}
+                        className={styles.card}
+                      />
+                    }
+                    className={styles["check-card"]}
+                    onClick={() => {
+                      if (visible) {
+                        showCardModal(card);
+                      }
+                    }}
+                  />
+                </div>
+              </Tooltip>
+            );
+          })}
         </div>
       </Space>
     </NeosModal>
@@ -324,4 +343,9 @@ export interface Option {
   //
   // 尽量不要用这个字段
   card?: CardType;
+}
+
+function systemTextOrFallback(id: number, fallback: string): string {
+  const value = fetchStrings(Region.System, id);
+  return value === "?" ? fallback : value;
 }

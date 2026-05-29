@@ -4,6 +4,11 @@ import { Context } from "@/container";
 import { isCardDisabled } from "@/stores";
 import type { Option } from "@/ui/Duel/Message";
 
+import {
+  getVisibleCardMeta,
+  isCardVisibleToCurrentPlayer,
+} from "./cardVisibility";
+
 const helper = async (
   context: Context,
   {
@@ -32,15 +37,20 @@ const helper = async (
 
   // 这里可能直接用target.meta即可，不用再查一遍DB
   // 但是ygopro后端传回来了code，感觉这里会有些坑，因此求稳这样写
-  const newID =
-    code !== 0
+  const visible = target
+    ? isCardVisibleToCurrentPlayer(target)
+    : isCardVisibleToCurrentPlayer({ code, location });
+  const newID = visible
+    ? code !== 0
       ? code
       : target !== undefined
       ? target.code !== 0
         ? target.code
         : target.meta.id
-      : 0;
-  const meta = fetchCard(newID);
+      : 0
+    : 0;
+  const meta =
+    newID === 0 && target ? getVisibleCardMeta(target) : fetchCard(newID);
 
   const effectDesc = effect_description
     ? getCardStr(meta, effect_description & 0xf)

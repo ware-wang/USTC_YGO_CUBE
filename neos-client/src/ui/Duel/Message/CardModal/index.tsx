@@ -3,7 +3,8 @@ import { Divider, Drawer, Space, Tag } from "antd";
 import React from "react";
 import { proxy, useSnapshot } from "valtio";
 
-import { type CardMeta, fetchStrings, Region } from "@/api";
+import { type CardMeta, fetchStrings, Region, ygopro } from "@/api";
+import { isCardVisibleToCurrentPlayer } from "@/service/utils/cardVisibility";
 import { YgoCard } from "@/ui/Shared";
 
 import {
@@ -37,6 +38,12 @@ const defaultStore = {
 };
 
 const store = proxy(defaultStore);
+
+interface CardModalInput
+  extends Partial<Pick<typeof store, "meta" | "counters">> {
+  code?: number;
+  location?: ygopro.CardLocation;
+}
 
 export const CardModal = () => {
   const snap = useSnapshot(store);
@@ -153,9 +160,8 @@ const CounterLine = (props: { counters: { [type: number]: number } }) => {
   );
 };
 
-export const showCardModal = (
-  card: Partial<Pick<typeof store, "meta" | "counters">>,
-) => {
+export const showCardModal = (card: CardModalInput) => {
+  if (!isCardVisibleToCurrentPlayer(card)) return;
   store.isOpen = true;
   store.meta = card?.meta ?? defaultStore.meta;
   store.counters = card?.counters ?? defaultStore.counters;

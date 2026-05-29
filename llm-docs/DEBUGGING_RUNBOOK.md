@@ -237,6 +237,44 @@ testMode 下建议：
 - 阶段控件 `duel-phase-select` 应恢复可用
 - `chainEnd.ts` 会兜底清空所有位置的 `chainIndex`
 
+### 7.3.5 选择目标时能看到对手盖卡
+
+这类问题优先按“后端视角裁剪 + 前端展示保护”两层查。
+
+后端先看：
+
+- `server/src/duel-bridge/duel-session.js` 的普通 `gameMsg` 是否仍然带 `playerPayloads`
+- `server/src/duel-bridge/ygopro-ws.js` 是否按 `playerPayloads` 分别发给 `room.players[0/1]`
+- 协议联调里，对手不可见的抽牌/盖卡消息是否被裁成 `code=0`
+
+前端再看：
+
+- 棋盘卡 DOM 的 `data-card-code`：对手盖卡应为 `0`
+- 选择目标弹窗的 `data-card-code`：对手盖卡应为 `0`
+- 点击对手盖卡不应打开 `CardModal`
+- 卡图应显示卡背，不应请求真实卡图 URL
+- 合法公开窗口里，`card.revealed` 应短暂为 `true`，例如 `CONFIRM_CARDS` 或盖伏卡发动连锁
+
+相关文件：
+
+- `neos-client/src/stores/cardStore.ts`
+- `neos-client/src/service/utils/cardVisibility.ts`
+- `neos-client/src/service/utils/fetchCheckCardMeta.ts`
+- `neos-client/src/ui/Duel/Message/CardModal/index.tsx`
+- `neos-client/src/ui/Duel/Message/CardListModal/index.tsx`
+- `neos-client/src/ui/Duel/Message/SelectCardsModal/index.tsx`
+- `neos-client/src/ui/Duel/PlayMat/Card/index.tsx`
+
+### 7.3.6 选择目标弹窗按钮显示 `?`
+
+优先检查 `SelectCardsModal`：
+
+- `Region.System` 缺 `1211/1296/1295` 时，应回退到语言包：
+  - `Menu.Confirm`
+  - `Menu.Cancel`
+  - `Menu.SelectionComplete`
+- 如果仍然显示 `?`，先看 `neos-client/src/ui/I18N/Source/*/translation.json` 中对应 key 是否存在。
+
 ### 7.4 某些卡在日志中被跳过
 
 这通常是缺 Lua 脚本。先看：
@@ -255,5 +293,8 @@ find ../ygopro/script -maxdepth 1 -type f | head
 - [ ] `node test-ygopro-ws.js` 通过
 - [ ] `STOC_DUEL_START` 后能看到 `STOC_GAME_MSG func=4`
 - [ ] duel 内 `CTOS_CHAT` 能回显为 `STOC_CHAT`
+- [ ] 对手盖卡在棋盘、选择弹窗、列表抽屉中 `data-card-code=0`
+- [ ] 点击对手盖卡不会打开卡片详情抽屉
+- [ ] 选择目标弹窗按钮不显示 `?`
 - [ ] `POST /api/launch-duel` 返回 `/neos/duelroom`
 - [ ] DuelRoom 默认地址仍是 `<hostname>:7911`

@@ -169,6 +169,9 @@ export default async (container: Container, move: MsgMove) => {
   // 更新信息
   target.code = code;
   target.location = to;
+  if (code === 0) {
+    target.revealed = false;
+  }
   if (!(from.zone === MZONE && to.zone === MZONE)) {
     // if the card is moved, it no longer being targeted
     // unless it move over the monster zone.

@@ -44,11 +44,13 @@
   - 手牌可以正确装载到 DOM
   - 主阶段通常召唤、普通魔法发动、墓地诱发检索、`CHAIN_SOLVED` / `CHAIN_END` 都能在真实 UI 里走通
   - duel WebSocket 资源路径已统一，不再因为 `YGO_SCRIPT_PATH` / `YGOPRO_SCRIPT_PATH` 分裂导致假性“版本不匹配”
+  - 后端普通 game message 已按 `playerView(player)` 分发，协议层已确认隐藏信息会按玩家视角裁剪
 - 其中一个旧问题已经处理：
   - `DuelRoom` 现在按页面协议选择 `ws://` / `wss://`，不会再把 HTTP 部署误连成 `wss://<host>:7911`
 - 当前未完全覆盖的是：
   - 完整 cube-draft 业务流的浏览器自动化
   - 更多类型的 duel 主阶段动作消息兼容
+  - 真实浏览器里“攻击宣言选择对手盖卡目标”的隐私回归
 
 ---
 
@@ -90,6 +92,8 @@
 - battle table
 - YDK 提交
 - `duel_launch_neos`
+- 对手盖卡在选择目标/卡片列表/棋盘点击时不会泄露真实 `code` 或详情
+- 选择目标弹窗按钮在系统字符串缺失时不会显示 `?`
 
 ### 备注
 

@@ -43,6 +43,7 @@ export default async (
     if (target.code === 0) {
       target.meta = meta;
     }
+    target.revealed = true;
 
     context.historyStore.putEffect(context, meta.id, location);
 

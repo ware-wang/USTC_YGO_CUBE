@@ -13,5 +13,6 @@ export default (
     // 把数据抹掉就好了
     card.code = 0;
     card.meta = { id: 0, data: {}, text: {} };
+    card.revealed = false;
   }
 };

@@ -37,6 +37,7 @@ export default (container: Container, field: MsgReloadField) => {
               meta: { id: 0, data: {}, text: {} },
               isToken: false,
               targeted: false,
+              revealed: false,
               selectInfo: {
                 selectable: false,
                 selected: false,

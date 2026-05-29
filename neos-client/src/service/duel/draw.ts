@@ -30,6 +30,7 @@ export default async (
     const meta = fetchCard(code);
     card.code = code;
     card.meta = meta;
+    card.revealed = code > 0;
     card.location.zone = ygopro.CardZone.HAND;
     card.location.sequence = Number(idx) + handsLength;
   }

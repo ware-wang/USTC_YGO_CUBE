@@ -20,6 +20,7 @@ export interface CardType {
   counters: { [type: number]: number }; // 指示器
   isToken: boolean; // 是否是token
   targeted: boolean; // 当前卡是否被选择成为效果的对象
+  revealed: boolean; // 临时或规则公开的信息，例如确认卡片、发动盖伏卡
   selectInfo: {
     selectable: boolean; // 是否可以被选择
     selected: boolean; // 是否已经被选择

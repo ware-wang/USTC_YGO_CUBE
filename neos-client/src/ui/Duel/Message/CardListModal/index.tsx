@@ -3,6 +3,7 @@ import React from "react";
 import { proxy, useSnapshot } from "valtio";
 
 import { ygopro } from "@/api";
+import { getVisibleCardId } from "@/service/utils/cardVisibility";
 import { cardStore, CardType } from "@/stores";
 import { YgoCard } from "@/ui/Shared";
 
@@ -54,7 +55,7 @@ export const CardListModal = () => {
       <Space direction="vertical">
         {cardList.map((card) => (
           <YgoCard
-            code={card.code}
+            code={getVisibleCardId(card)}
             key={card.uuid}
             targeted={card.targeted}
             width={CARD_WIDTH}

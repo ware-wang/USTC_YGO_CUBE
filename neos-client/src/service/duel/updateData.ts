@@ -21,6 +21,7 @@ export default async (container: Container, updateData: MsgUpdateData) => {
             const newMeta = fetchCard(action.code);
             target.code = action.code;
             target.meta = newMeta;
+            target.revealed = true;
           }
 
           const meta = target.meta;

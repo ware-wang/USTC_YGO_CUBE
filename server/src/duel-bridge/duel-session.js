@@ -239,12 +239,17 @@ export class DuelSession extends EventEmitter {
             player: this.#turnPlayer,
             raw: rawBuf.toString('base64'),
             _rawBuf: rawBuf,
+            playerPayloads: buildPlayerViewPayloads(msg),
           },
         });
       } else {
         this.emit('gameMsg', {
           type: 'newTurn',
-          data: { raw: rawBuf.toString('base64'), _rawBuf: rawBuf },
+          data: {
+            raw: rawBuf.toString('base64'),
+            _rawBuf: rawBuf,
+            playerPayloads: buildPlayerViewPayloads(msg),
+          },
         });
       }
       return false;
@@ -255,7 +260,12 @@ export class DuelSession extends EventEmitter {
       const rawBuf = Buffer.from(msg.toPayload());
       this.emit('gameMsg', {
         type: 'newPhase',
-        data: { phase: msg.phase, raw: rawBuf.toString('base64'), _rawBuf: rawBuf },
+        data: {
+          phase: msg.phase,
+          raw: rawBuf.toString('base64'),
+          _rawBuf: rawBuf,
+          playerPayloads: buildPlayerViewPayloads(msg),
+        },
       });
       return false;
     }
@@ -309,7 +319,11 @@ export class DuelSession extends EventEmitter {
       const winRawBuf = Buffer.from(msg.toPayload());
       this.emit('gameMsg', {
         type: msg.constructor.name,
-        data: { raw: winRawBuf.toString('base64'), _rawBuf: winRawBuf },
+        data: {
+          raw: winRawBuf.toString('base64'),
+          _rawBuf: winRawBuf,
+          playerPayloads: buildPlayerViewPayloads(msg),
+        },
       });
       this.emit('win', { player: msg.player, reason: msg.type });
       return true;
@@ -319,7 +333,11 @@ export class DuelSession extends EventEmitter {
     const rawBuf = Buffer.from(msg.toPayload());
     this.emit('gameMsg', {
       type: msg.constructor.name,
-      data: { raw: rawBuf.toString('base64'), _rawBuf: rawBuf },
+      data: {
+        raw: rawBuf.toString('base64'),
+        _rawBuf: rawBuf,
+        playerPayloads: buildPlayerViewPayloads(msg),
+      },
     });
     return false;
   }
@@ -412,4 +430,22 @@ function buildPlayerPayloads(msg, responsePlayer) {
       waiting: raw.toString('base64') === waiting,
     };
   });
+}
+
+function buildPlayerViewPayloads(msg) {
+  const sendTargets = typeof msg.getSendTargets === 'function'
+    ? msg.getSendTargets()
+    : [0, 1];
+
+  return [0, 1]
+    .filter((player) => sendTargets.includes(player))
+    .map((player) => {
+      const view = typeof msg.playerView === 'function' ? msg.playerView(player) : msg;
+      const raw = Buffer.from(view.toPayload());
+      return {
+        player,
+        raw: raw.toString('base64'),
+        waiting: false,
+      };
+    });
 }

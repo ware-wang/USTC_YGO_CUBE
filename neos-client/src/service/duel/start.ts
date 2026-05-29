@@ -80,6 +80,7 @@ export default async (
           },
           isToken: !((i + 1) % 3),
           targeted: false,
+          revealed: false,
           selectInfo: {
             selectable: false,
             selected: false,
