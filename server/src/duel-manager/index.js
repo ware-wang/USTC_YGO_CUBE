@@ -24,6 +24,10 @@ export class DuelManager {
         id: tid, roomId: room.id,
         seats: [null, null], decks: [null, null],
         state: 'waiting', winner: null,
+        winnerSeat: null,
+        duelPassWd: null,
+        startedAt: null,
+        finishedAt: null,
         checkDeckSize: true,
         testMode: room.testMode === true,
       };
@@ -39,11 +43,49 @@ export class DuelManager {
     if (t.state !== 'waiting') return { error: '对战已开始或结束' };
     if (seatIndex < 0 || seatIndex > 1) return { error: '无效座位' };
     if (t.seats[seatIndex]) return { error: '座位已有人' };
+
+    for (const [, ot] of this.tables) {
+      if (ot.roomId === t.roomId && ot.state === 'dueling' && ot.seats.includes(playerId)) {
+        return { error: '你正在其他对战桌对战中，不能换桌' };
+      }
+    }
+
     for (const [, ot] of this.tables) {
       if (ot.roomId !== t.roomId) continue;
-      for (let i = 0; i < 2; i++) if (ot.seats[i] === playerId) ot.seats[i] = null;
+      for (let i = 0; i < 2; i++) {
+        if (ot.seats[i] === playerId) {
+          ot.seats[i] = null;
+          resetTableMatchState(ot);
+        }
+      }
     }
     t.seats[seatIndex] = playerId;
+    resetTableMatchState(t);
+    return { success: true, table: t };
+  }
+
+  leaveTable(tableId, playerId) {
+    const t = this.tables.get(tableId);
+    if (!t) return { error: '对战桌不存在' };
+    const si = t.seats.indexOf(playerId);
+    if (si < 0) return { error: '你不在该对战桌' };
+    if (t.state === 'dueling') {
+      return { error: '对战中不能离开桌子；请先在对战界面投降或结束对局' };
+    }
+
+    t.seats[si] = null;
+    resetTableMatchState(t);
+    return { success: true, table: t };
+  }
+
+  rematchTable(tableId, playerId) {
+    const t = this.tables.get(tableId);
+    if (!t) return { error: '对战桌不存在' };
+    if (t.state !== 'finished') return { error: '只有已结束的对战桌可以再战' };
+    if (!t.seats.includes(playerId)) return { error: '你不在该对战桌' };
+    if (!t.seats[0] || !t.seats[1]) return { error: '双方都在桌上时才能再战；否则请离桌后重新选择对手' };
+
+    resetTableMatchState(t);
     return { success: true, table: t };
   }
 
@@ -77,7 +119,9 @@ export class DuelManager {
     if (!t) return null;
     const si = t.seats.indexOf(playerId);
     return {
-      id: t.id, roomId: t.roomId, state: t.state, winner: t.winner,
+      id: t.id, roomId: t.roomId, state: t.state,
+      winner: t.winner, winnerSeat: t.winnerSeat,
+      startedAt: t.startedAt, finishedAt: t.finishedAt,
       seats: t.seats.map(id => id ? { id } : null),
       mySeat: si >= 0 ? si : -1,
     };
@@ -87,8 +131,21 @@ export class DuelManager {
     const list = [];
     for (const t of this.tables.values())
       if (t.roomId === roomId)
-        list.push({ id: t.id, state: t.state, seats: t.seats.map(id => id ? { id } : null), winner: t.winner });
+        list.push({
+          id: t.id,
+          roomId: t.roomId,
+          state: t.state,
+          seats: t.seats.map(id => id ? { id } : null),
+          winner: t.winner,
+          winnerSeat: t.winnerSeat,
+          startedAt: t.startedAt,
+          finishedAt: t.finishedAt,
+        });
     return list;
+  }
+
+  deleteRoomTables(roomId) {
+    this._cleanup(roomId);
   }
 
   getTableSeatIds(tableId) {
@@ -96,10 +153,25 @@ export class DuelManager {
     return t ? [...t.seats] : [];
   }
 
-  markTableDueling(tableId) {
+  markTableDueling(tableId, metadata = {}) {
     const t = this.tables.get(tableId);
     if (!t) return null;
     t.state = 'dueling';
+    t.duelPassWd = metadata.passWd || t.duelPassWd || null;
+    t.startedAt = Date.now();
+    t.finishedAt = null;
+    t.winner = null;
+    t.winnerSeat = null;
+    return t;
+  }
+
+  markTableFinished(tableId, winnerSeat = null) {
+    const t = this.tables.get(tableId);
+    if (!t) return null;
+    t.state = 'finished';
+    t.finishedAt = Date.now();
+    t.winnerSeat = Number.isInteger(winnerSeat) ? winnerSeat : null;
+    t.winner = Number.isInteger(winnerSeat) ? (t.seats[winnerSeat] || null) : null;
     return t;
   }
 
@@ -218,4 +290,14 @@ function countCards(cards) {
     counts.set(code, (counts.get(code) || 0) + 1);
   }
   return counts;
+}
+
+function resetTableMatchState(table) {
+  table.decks = [null, null];
+  table.state = 'waiting';
+  table.winner = null;
+  table.winnerSeat = null;
+  table.duelPassWd = null;
+  table.startedAt = null;
+  table.finishedAt = null;
 }

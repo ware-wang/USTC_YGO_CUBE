@@ -15,11 +15,26 @@ export function initSocket(initInfo: {
   player: string;
   passWd: string;
   customOnConnected?: (conn: WebSocketStream) => void;
+  onClose?: (conn: WebSocketStream, ev: CloseEvent) => void;
+  onError?: (conn: WebSocketStream, ev: Event) => void;
+  suppressErrorAlert?: boolean;
 }): WebSocketStream {
-  const { ip, player, passWd, customOnConnected } = initInfo;
+  const {
+    ip,
+    player,
+    passWd,
+    customOnConnected,
+    onClose,
+    onError,
+    suppressErrorAlert,
+  } = initInfo;
   return new WebSocketStream(ip, (conn, _event) => {
     handleSocketOpen(conn, ip, player, passWd);
     customOnConnected && customOnConnected(conn);
+  }, {
+    onClose,
+    onError,
+    suppressErrorAlert,
   });
 }
 

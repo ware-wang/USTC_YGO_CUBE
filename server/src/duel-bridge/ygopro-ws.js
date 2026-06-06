@@ -23,10 +23,18 @@ import {
 
 const MSG_START = 0x04;
 const MSG_UPDATE_DATA = 0x06;
+const LOCATION_DECK = 0x01;
+const LOCATION_HAND = 0x02;
+const LOCATION_MZONE = 0x04;
+const LOCATION_SZONE = 0x08;
+const LOCATION_GRAVE = 0x10;
+const LOCATION_REMOVED = 0x20;
 const LOCATION_EXTRA = 0x40;
 const POS_FACEDOWN = 0x0a;
+const POS_FACEUP = 0x05;
 const QUERY_CODE = 0x01;
 const QUERY_POSITION = 0x02;
+const WS_OPEN = 1;
 
 // ── Room management ───────────────────────────
 
@@ -38,10 +46,11 @@ let duelOptions = { scriptPath: null, cardsCdbPath: null };
 
 /**
  * @typedef {object} PendingPlayer
- * @property {import('ws').WebSocket} ws
+ * @property {import('ws').WebSocket|null} ws
  * @property {string} name
  * @property {boolean} ready
  * @property {{main: number[], side: number[]}|null} deck
+ * @property {number|null} disconnectedAt
  */
 
 /**
@@ -50,6 +59,10 @@ let duelOptions = { scriptPath: null, cardsCdbPath: null };
  * @property {PendingPlayer[]} players
  * @property {{main: number[], extra: number[]}[]|null} preloadedDecks  // if preloaded from cube-draft
  * @property {boolean} testMode
+ * @property {string|null} tableId
+ * @property {string|null} draftRoomId
+ * @property {Function|null} onDuelEnd
+ * @property {boolean} finished
  * @property {object|null} session
  * @property {string|null} sessionId
  * @property {{main: number[], extra: number[], side: number[]}[]} clientDecks // decks from neos-ts UPDATE_DECK
@@ -67,6 +80,10 @@ function getOrCreateRoom(passWd) {
       players: [],
       preloadedDecks: null,
       testMode: false,
+      tableId: null,
+      draftRoomId: null,
+      onDuelEnd: null,
+      finished: false,
       session: null,
       sessionId: null,
       clientDecks: [],
@@ -84,6 +101,10 @@ export function registerPreloadedDecks(passWd, decks, options = {}) {
   const room = getOrCreateRoom(passWd);
   room.preloadedDecks = decks;
   room.testMode = options.testMode === true;
+  room.tableId = options.tableId || room.tableId || null;
+  room.draftRoomId = options.roomId || room.draftRoomId || null;
+  room.onDuelEnd = typeof options.onDuelEnd === 'function' ? options.onDuelEnd : room.onDuelEnd;
+  room.finished = false;
   console.log(`[ygopro-ws] Registered preloaded decks for room "${passWd}"`);
   return room;
 }
@@ -127,53 +148,57 @@ export function handleYgoproConnection(ws, options = {}) {
 
             currentRoom = getOrCreateRoom(passWd);
 
-            // Assign position. Disconnected players leave null seats, so reuse
-            // seat 0/1 instead of using Array.length as the fullness check.
-            const openPosition = [0, 1].find((index) => !currentRoom.players[index]);
+            const reconnectPosition = [0, 1].find((index) => {
+              const player = currentRoom.players[index];
+              return player?.name === playerName;
+            });
+
+            if (currentRoom.session && reconnectPosition === undefined) {
+              ws.send(buildStocErrorMsg(null, 1, 0));
+              return;
+            }
+
+            // Assign position. A reconnecting player must get the original
+            // seat; otherwise private state and response ownership diverge.
+            const openPosition = reconnectPosition ?? [0, 1].find((index) => !currentRoom.players[index]);
             if (openPosition === undefined) {
               // Room full → send error and make observer? For now, error
               ws.send(buildStocErrorMsg(null, 1, 0)); // JOINERROR, code=0 → generic join error
               return;
             }
             playerPosition = openPosition;
+            const previousPlayer = currentRoom.players[playerPosition];
             currentRoom.players[playerPosition] = {
+              ...previousPlayer,
               ws,
               name: playerName,
-              ready: false,
-              deck: null,
+              ready: previousPlayer?.ready ?? false,
+              deck: previousPlayer?.deck ?? null,
+              disconnectedAt: null,
             };
-
-            // Send JOIN_GAME confirmation
-            // Get opponent name for the join response
-            const oppName = currentRoom.players.length >= 2
-              ? currentRoom.players[1 - playerPosition]?.name || 'Opponent'
-              : 'Waiting...';
-
-            const joinMsg = playerPosition === 0
-              ? buildStocJoinGame(playerName, oppName)
-              : buildStocJoinGame(oppName, playerName);
-
-            ws.send(joinMsg);
-
-            // Send TYPE_CHANGE (assign seat)
-            const isHost = playerPosition === 0;
-            ws.send(buildStocTypeChange(playerPosition, isHost));
-
-            // Send HS_PLAYER_ENTER for self
-            ws.send(buildStocHsPlayerEnter(playerName, playerPosition));
-
-            // If opponent already connected, send their enter notification
-            if (currentRoom.players.length >= 2) {
-              const otherPlayer = currentRoom.players[1 - playerPosition];
-              if (otherPlayer) {
-                ws.send(buildStocHsPlayerEnter(otherPlayer.name, 1 - playerPosition));
-
-                // Notify opponent about new player
-                otherPlayer.ws.send(buildStocHsPlayerEnter(playerName, playerPosition));
-              }
+            if (previousPlayer?.ws && previousPlayer.ws !== ws && previousPlayer.ws.readyState === WS_OPEN) {
+              try { previousPlayer.ws.close(4000, 'replaced by reconnect'); } catch (e) { /* ignore */ }
             }
 
+            sendRoomJoinState(currentRoom, playerPosition);
+
             console.log(`[ygopro-ws] Room "${passWd}": ${currentRoom.players.filter(Boolean).length}/2 players`);
+
+            if (currentRoom.finished) {
+              ws.send(buildStocDuelEnd());
+              break;
+            }
+
+            if (currentRoom.session) {
+              console.log(`[ygopro-ws] ${playerName} reconnected to active duel room "${passWd}" as player ${playerPosition}`);
+              sendDuelReconnectSnapshot(currentRoom, playerPosition);
+
+              const otherPlayer = currentRoom.players[1 - playerPosition];
+              if (otherPlayer?.ws && otherPlayer.ws.readyState === WS_OPEN) {
+                otherPlayer.ws.send(buildStocChat(0, `${playerName} has reconnected`));
+              }
+              break;
+            }
 
             // ── Auto-ready for preloaded-deck rooms ──────────────────
             // If this room has preloaded decks from cube-draft, auto-mark
@@ -184,7 +209,7 @@ export function handleYgoproConnection(ws, options = {}) {
 
               // Notify all players about ready state change
               for (const p of currentRoom.players) {
-                if (p?.ws) {
+                if (p?.ws && p.ws.readyState === WS_OPEN) {
                   p.ws.send(buildStocHsPlayerChange(1, playerPosition));
                 }
               }
@@ -222,7 +247,7 @@ export function handleYgoproConnection(ws, options = {}) {
 
               // Notify all players about state change
               for (const p of currentRoom.players) {
-                if (p?.ws) {
+                if (p?.ws && p.ws.readyState === WS_OPEN) {
                   p.ws.send(buildStocHsPlayerChange(1, playerPosition)); // 1 = ready
                 }
               }
@@ -245,7 +270,7 @@ export function handleYgoproConnection(ws, options = {}) {
               if (player) player.ready = false;
 
               for (const p of currentRoom.players) {
-                if (p?.ws) {
+                if (p?.ws && p.ws.readyState === WS_OPEN) {
                   p.ws.send(buildStocHsPlayerChange(0, playerPosition)); // 0 = not ready
                 }
               }
@@ -285,9 +310,6 @@ export function handleYgoproConnection(ws, options = {}) {
           case CTOS_SURRENDER: {
             if (currentRoom?.session) {
               currentRoom.session.surrender(playerPosition);
-              for (const p of currentRoom.players) {
-                if (p?.ws) p.ws.send(buildStocDuelEnd());
-              }
             }
             break;
           }
@@ -327,37 +349,32 @@ export function handleYgoproConnection(ws, options = {}) {
     console.log(`[ygopro-ws] ${playerName} disconnected`);
 
     if (currentRoom) {
-      // Notify opponent
+      if (
+        playerPosition < 0 ||
+        playerPosition >= currentRoom.players.length ||
+        currentRoom.players[playerPosition]?.ws !== ws
+      ) {
+        return;
+      }
+
+      const player = currentRoom.players[playerPosition];
+      player.ws = null;
+      player.disconnectedAt = Date.now();
+      if (!currentRoom.session && !currentRoom.starting) {
+        player.ready = false;
+      }
+
+      // Notify opponent, but do not end the duel. The OCGCore state is kept
+      // alive so the same player can reconnect into the original seat.
       const otherPos = 1 - playerPosition;
       const otherPlayer = currentRoom.players[otherPos];
-      if (otherPlayer?.ws) {
+      if (otherPlayer?.ws && otherPlayer.ws.readyState === WS_OPEN) {
         otherPlayer.ws.send(buildStocHsPlayerChange(0, playerPosition));
-        otherPlayer.ws.send(buildStocChat(0, `${playerName} has disconnected`));
-        otherPlayer.ws.send(buildStocDuelEnd());
+        otherPlayer.ws.send(buildStocChat(0, `${playerName} has disconnected and may reconnect`));
       }
 
-      // Clean up session
-      if (currentRoom.session) {
-        currentRoom.session.surrender(playerPosition);
-      }
-
-      // Remove player from room
-      if (
-        playerPosition >= 0 &&
-        playerPosition < currentRoom.players.length &&
-        currentRoom.players[playerPosition]?.ws === ws
-      ) {
-        currentRoom.players[playerPosition] = null;
-      }
-
-      // Clean up room if empty
-      const activePlayers = currentRoom.players.filter(Boolean);
-      if (activePlayers.length === 0) {
-        // Keep rooms with preloaded decks so they survive until players join
-        if (currentRoom.preloadedDecks && !currentRoom.session) {
-          // Room has preloaded decks but no active duel yet — keep it
-          return;
-        }
+      if (!currentRoom.session && currentRoom.players.every((p) => !p || !p.ws)) {
+        if (currentRoom.preloadedDecks) return;
         pendingRooms.delete(currentRoom.passWd);
         console.log(`[ygopro-ws] Room "${currentRoom.passWd}" cleaned up`);
       }
@@ -429,15 +446,13 @@ async function startDuel(room) {
 
     room.session = session;
     room.sessionId = session.sessionId;
+    room.starting = false;
 
     // Send DUEL_START to both players AFTER session is ready
-    const deckSizes = session.getDeckSizes();
     for (let i = 0; i < room.players.length; i++) {
       const p = room.players[i];
-      if (!p?.ws) continue;
-      p.ws.send(buildStocDuelStart());
-      p.ws.send(buildStocGameMsg(buildMsgStartPayload(i, deckSizes, room)));
-      p.ws.send(buildStocGameMsg(buildExtraDeckUpdatePayload(i, session.loadedDecks[i]?.extra || [])));
+      if (!p?.ws || p.ws.readyState !== WS_OPEN) continue;
+      sendDuelStartSnapshot(room, i, { includeField: false });
     }
 
     // Hook up events for relay
@@ -504,8 +519,9 @@ async function startDuel(room) {
 
     session.on('win', (winMsg) => {
       console.log(`[ygopro-ws] Duel ended, winner: player ${winMsg.player}`);
+      notifyDuelFinished(room, winMsg);
       for (const p of room.players) {
-        if (p?.ws) p.ws.send(buildStocDuelEnd());
+        if (p?.ws && p.ws.readyState === WS_OPEN) p.ws.send(buildStocDuelEnd());
       }
     });
 
@@ -517,8 +533,9 @@ async function startDuel(room) {
       console.error(
         `[ygopro-ws] Duel runtime error in room "${room.passWd}" session ${room.sessionId}: ${err.message}`,
       );
+      notifyDuelFinished(room, { player: null, reason: 'runtime_error' });
       for (const p of room.players) {
-        if (p?.ws) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
+        if (p?.ws && p.ws.readyState === WS_OPEN) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
       }
     });
 
@@ -541,9 +558,97 @@ async function startDuel(room) {
     }
     room.starting = false;
     room.session = null;
+    notifyDuelFinished(room, { player: null, reason: 'start_failed' });
     for (const p of room.players) {
-      if (p?.ws && p.ws.readyState === 1) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
+      if (p?.ws && p.ws.readyState === WS_OPEN) p.ws.send(buildStocErrorMsg(null, 4, 0)); // VERSIONERROR
     }
+  }
+}
+
+function sendRoomJoinState(room, playerPosition) {
+  const player = room.players[playerPosition];
+  if (!player?.ws || player.ws.readyState !== WS_OPEN) return;
+
+  const otherPosition = 1 - playerPosition;
+  const otherPlayer = room.players[otherPosition];
+  const selfName = player.name || 'Player';
+  const oppName = otherPlayer?.name || 'Waiting...';
+
+  const joinMsg = playerPosition === 0
+    ? buildStocJoinGame(selfName, oppName)
+    : buildStocJoinGame(oppName, selfName);
+
+  player.ws.send(joinMsg);
+  player.ws.send(buildStocTypeChange(playerPosition, playerPosition === 0));
+  player.ws.send(buildStocHsPlayerEnter(selfName, playerPosition));
+
+  if (otherPlayer) {
+    player.ws.send(buildStocHsPlayerEnter(otherPlayer.name, otherPosition));
+  }
+
+  for (let i = 0; i < 2; i++) {
+    if (room.players[i]?.ready) {
+      player.ws.send(buildStocHsPlayerChange(1, i));
+    }
+  }
+
+  if (otherPlayer?.ws && otherPlayer.ws.readyState === WS_OPEN) {
+    otherPlayer.ws.send(buildStocHsPlayerEnter(selfName, playerPosition));
+    otherPlayer.ws.send(buildStocHsPlayerChange(player.ready ? 1 : 0, playerPosition));
+  }
+}
+
+function sendDuelReconnectSnapshot(room, playerIndex) {
+  sendDuelStartSnapshot(room, playerIndex, { includeField: true });
+
+  const responsePayload = room.session?.getWaitingResponsePayloadFor?.(playerIndex);
+  const player = room.players[playerIndex];
+  if (responsePayload && player?.ws && player.ws.readyState === WS_OPEN) {
+    player.ws.send(buildStocGameMsg(responsePayload));
+  }
+}
+
+function notifyDuelFinished(room, winMsg) {
+  if (room.finished) return;
+  room.finished = true;
+
+  const winnerPosition = Number.isInteger(winMsg?.player) ? winMsg.player : null;
+  if (typeof room.onDuelEnd === 'function') {
+    try {
+      room.onDuelEnd({
+        passWd: room.passWd,
+        tableId: room.tableId,
+        roomId: room.draftRoomId,
+        winnerPosition,
+        reason: winMsg?.reason ?? null,
+      });
+    } catch (err) {
+      console.warn(`[ygopro-ws] onDuelEnd failed for room "${room.passWd}": ${err?.message || err}`);
+    }
+  }
+}
+
+function sendDuelStartSnapshot(room, playerIndex, { includeField }) {
+  const session = room.session;
+  const player = room.players[playerIndex];
+  if (!session || !player?.ws || player.ws.readyState !== WS_OPEN) return;
+
+  const deckSizes = includeField ? getCurrentDeckSizes(session) : session.getDeckSizes();
+  player.ws.send(buildStocDuelStart());
+  player.ws.send(buildStocGameMsg(buildMsgStartPayload(playerIndex, deckSizes, room)));
+
+  if (!includeField) {
+    player.ws.send(buildStocGameMsg(buildExtraDeckUpdatePayload(playerIndex, session.loadedDecks[playerIndex]?.extra || [])));
+    return;
+  }
+
+  const fieldInfo = session.queryFieldInfo();
+  if (fieldInfo?.raw?.length > 0) {
+    player.ws.send(buildStocGameMsg(Buffer.from(fieldInfo.raw)));
+  }
+
+  for (const payload of buildVisibleFieldUpdatePayloads(room, playerIndex)) {
+    player.ws.send(buildStocGameMsg(payload));
   }
 }
 
@@ -597,6 +702,100 @@ function buildExtraDeckUpdatePayload(playerIndex, extraCodes) {
   ]);
 }
 
+function getCurrentDeckSizes(session) {
+  return [0, 1].map((player) => ({
+    main: session.queryFieldCount(player, LOCATION_DECK),
+    extra: session.queryFieldCount(player, LOCATION_EXTRA),
+  }));
+}
+
+function buildVisibleFieldUpdatePayloads(room, viewerIndex) {
+  if (!room.session) return [];
+
+  const payloads = [];
+  const locations = [
+    LOCATION_HAND,
+    LOCATION_MZONE,
+    LOCATION_SZONE,
+    LOCATION_GRAVE,
+    LOCATION_REMOVED,
+    LOCATION_EXTRA,
+  ];
+
+  for (let controller = 0; controller < 2; controller++) {
+    for (const location of locations) {
+      const cards = room.session.queryFieldCards(controller, location, QUERY_CODE | QUERY_POSITION)?.cards || [];
+      const chunks = [];
+
+      cards.forEach((card, fallbackSequence) => {
+        const normalized = normalizeCardQuery(card, controller, location, fallbackSequence);
+        if (!shouldRevealCardToViewer(normalized, viewerIndex)) return;
+        chunks.push(buildUpdateDataChunk(normalized));
+      });
+
+      if (chunks.length > 0) {
+        payloads.push(Buffer.concat([
+          Buffer.from([MSG_UPDATE_DATA, controller & 0xff, location & 0xff]),
+          ...chunks,
+        ]));
+      }
+    }
+  }
+
+  return payloads;
+}
+
+function normalizeCardQuery(card, controller, location, sequence) {
+  return {
+    code: Number(card?.code || 0),
+    controller: Number(card?.controller ?? controller),
+    location: Number(card?.location ?? location),
+    sequence: Number(card?.sequence ?? sequence),
+    position: Number(card?.position || 0),
+  };
+}
+
+function shouldRevealCardToViewer(card, viewerIndex) {
+  if (!card.code) return false;
+  if (card.location === LOCATION_DECK) return false;
+
+  if (card.controller === viewerIndex) {
+    return true;
+  }
+
+  if (card.location === LOCATION_HAND) return false;
+  if (card.location === LOCATION_EXTRA) return isFaceUp(card.position);
+  if (card.location === LOCATION_GRAVE) return !isFaceDown(card.position);
+  if (card.location === LOCATION_REMOVED) return isFaceUp(card.position);
+  if (card.location === LOCATION_MZONE || card.location === LOCATION_SZONE) {
+    return isFaceUp(card.position);
+  }
+
+  return false;
+}
+
+function buildUpdateDataChunk(card) {
+  const actionDataLength = 12; // flags + code + packed card location
+  const chunk = Buffer.alloc(4 + actionDataLength);
+  let offset = 0;
+  chunk.writeInt32LE(4 + actionDataLength, offset); offset += 4;
+  chunk.writeInt32LE(QUERY_CODE | QUERY_POSITION, offset); offset += 4;
+  chunk.writeInt32LE(card.code, offset); offset += 4;
+  chunk.writeUInt8(card.controller & 0xff, offset++);
+  chunk.writeUInt8(card.location & 0xff, offset++);
+  chunk.writeUInt8(card.sequence & 0xff, offset++);
+  chunk.writeUInt8(card.position & 0xff, offset++);
+  return chunk;
+}
+
+function isFaceUp(position) {
+  return (position & POS_FACEUP) !== 0;
+}
+
+function isFaceDown(position) {
+  return (position & POS_FACEDOWN) !== 0;
+}
+
 // ── Cleanup timer ────────────────────────────
 
 // Periodic cleanup of dead rooms (every 5 minutes)
@@ -610,20 +809,39 @@ function startCleanup() {
   cleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [passWd, room] of pendingRooms) {
-      if (room.session) continue; // don't clean active duels
-      const allIdle = room.players.every(p => !p || !p.ready);
-      if (allIdle) {
-        // Keep rooms with preloaded decks (even with all-idle players)
-        const activePlayers = room.players.filter(Boolean);
-        if (room.preloadedDecks && activePlayers.length === 0) continue;
-        console.log(`[ygopro-ws] Cleaning up idle room "${passWd}"`);
-        for (const p of room.players) {
-          if (p?.ws && p.ws.readyState === 1) {
-            try { p.ws.close(); } catch (e) { /* ignore */ }
-          }
+      if (room.session) {
+        const players = room.players.filter(Boolean);
+        const allDisconnected = players.length > 0 && players.every((p) => !p.ws);
+        const newestDisconnect = Math.max(0, ...players.map((p) => p.disconnectedAt || 0));
+        if (allDisconnected && newestDisconnect > 0 && now - newestDisconnect > ROOM_TIMEOUT) {
+          console.log(`[ygopro-ws] Cleaning up disconnected active room "${passWd}"`);
+          notifyDuelFinished(room, { player: null, reason: 'all_disconnected_timeout' });
+          room.session.dispose?.();
+          pendingRooms.delete(passWd);
         }
-        pendingRooms.delete(passWd);
+        continue;
       }
+
+      for (let i = 0; i < room.players.length; i++) {
+        const player = room.players[i];
+        if (player && !player.ws && player.disconnectedAt && now - player.disconnectedAt > ROOM_TIMEOUT) {
+          room.players[i] = null;
+        }
+      }
+
+      const activePlayers = room.players.filter(Boolean);
+      if (room.preloadedDecks && activePlayers.length === 0) continue;
+
+      const allIdle = activePlayers.length === 0 || activePlayers.every(p => !p.ready);
+      if (!allIdle) continue;
+
+      console.log(`[ygopro-ws] Cleaning up idle room "${passWd}"`);
+      for (const p of activePlayers) {
+        if (p?.ws && p.ws.readyState === WS_OPEN) {
+          try { p.ws.close(); } catch (e) { /* ignore */ }
+        }
+      }
+      pendingRooms.delete(passWd);
     }
   }, CLEANUP_INTERVAL);
 }

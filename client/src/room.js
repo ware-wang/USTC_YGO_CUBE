@@ -229,8 +229,10 @@ function setupHandlers() {
     state.playerName = p.playerName;
     state.room = p.room;
     state.isHost = (p.room.players[0]?.id === p.playerId);
-    showView('room');
     updateRoomUI(p.room);
+    if (p.room.state !== 'complete') {
+      showView('room');
+    }
     const url = new URL(window.location);
     url.searchParams.set('roomId', p.room.id);
     url.searchParams.set('name', p.playerName);
@@ -389,7 +391,11 @@ function setupHandlers() {
       state.battle.tables = msg.payload.tables;
     }
     initResults();
-    showView('results');
+    if (msg.payload.resumeView === 'battleLobby') {
+      showBattleLobby();
+    } else {
+      showView('results');
+    }
   });
 
   wsClient.on('ydk', (msg) => {
@@ -440,6 +446,7 @@ function setupHandlers() {
 
 /* ======================== ROOM / ROUND TABLE ======================== */
 function updateRoomUI(room) {
+  setText('roomNameDisplay', room.name || '轮抽房间');
   setText('roomIdDisplay', room.id);
   setText('roomCubeName', room.cubeName);
   setText('roomRules', room.players.length + '/' + room.maxPlayers + '人 ' + room.packsPerPlayer + '包 ' + room.cardsPerPack + '张');
@@ -1022,6 +1029,9 @@ function updateTableFromServer(t) {
   const idx = state.battle.tables.findIndex(bt => bt.id === t.id);
   if (idx >= 0) state.battle.tables[idx] = t;
   else state.battle.tables.push(t);
+  if (state._pendingDuelTable === t.id && t.state !== 'dueling') {
+    clearNeosDuelPrompt();
+  }
 }
 
 function renderBattleTables() {
@@ -1061,11 +1071,13 @@ function renderBattleTables() {
       return pid === state.playerId;
     });
 
+    const statusText = getBattleTableStatusText(t, filledSeats, playerNames);
+
     card.innerHTML = `
       <h4>对战桌 ${t.id}</h4>
       ${seats.join('')}
       <div style="margin-top:8px;font-size:0.75rem;color:var(--text-dim)">
-        ${t.state === 'waiting' ? (filledSeats === 2 ? '双方就座' : '等待玩家加入 (' + filledSeats + '/2)') : t.state === 'ready' ? '双方就绪' : t.state === 'dueling' ? '对战中' : '已结束'}
+        ${statusText}
       </div>
     `;
 
@@ -1084,6 +1096,37 @@ function renderBattleTables() {
           break;
         }
       }
+    }
+
+    if (mySeat >= 0 && t.state !== 'dueling') {
+      const actions = document.createElement('div');
+      actions.className = 'bt-actions';
+
+      if (t.state === 'finished' && filledSeats === 2) {
+        const rematchBtn = document.createElement('button');
+        rematchBtn.className = 'btn-primary btn-sm';
+        rematchBtn.textContent = '再战';
+        rematchBtn.onclick = () => {
+          wsSend('battle_rematch_table', { tableId: t.id });
+        };
+        actions.appendChild(rematchBtn);
+      }
+
+      const leaveBtn = document.createElement('button');
+      leaveBtn.className = 'btn-secondary btn-sm';
+      leaveBtn.textContent = '离开桌子';
+      leaveBtn.onclick = () => {
+        wsSend('battle_leave_table', { tableId: t.id });
+      };
+      actions.appendChild(leaveBtn);
+      card.appendChild(actions);
+    }
+
+    if (mySeat >= 0 && t.state === 'dueling') {
+      const hint = document.createElement('div');
+      hint.className = 'bt-hint';
+      hint.textContent = '对战中不能离桌，请先在 neos 对战界面结束或投降。';
+      card.appendChild(hint);
     }
 
     // YDK submit area for seated players before both decks are ready.
@@ -1169,6 +1212,30 @@ function showBattleLobby() {
   showView('battleLobby');
 }
 
+function getBattleTableStatusText(t, filledSeats, playerNames) {
+  if (t.state === 'waiting') {
+    return filledSeats === 2 ? '双方就座，等待提交卡组' : '等待玩家加入 (' + filledSeats + '/2)';
+  }
+  if (t.state === 'ready') return '双方就绪，正在启动对战';
+  if (t.state === 'dueling') return '对战中';
+  if (t.state === 'finished') {
+    const winnerSeat = Number.isInteger(t.winnerSeat) ? t.winnerSeat : null;
+    if (winnerSeat === null || winnerSeat < 0 || winnerSeat > 1) return '已结束';
+    const winnerSeatData = t.seats[winnerSeat];
+    const winnerId = typeof winnerSeatData === 'object' ? winnerSeatData?.id : winnerSeatData;
+    const winnerName = winnerId ? (playerNames[winnerId] || String(winnerId).slice(0, 8)) : '';
+    return winnerName ? '已结束，胜者：' + winnerName : '已结束';
+  }
+  return '未知状态';
+}
+
+function clearNeosDuelPrompt() {
+  const prompt = el('neosDuelContainer');
+  if (prompt) prompt.remove();
+  state._pendingDuelUrl = null;
+  state._pendingDuelTable = null;
+}
+
 /**
  * Handle neos-ts duel launch response from server.
  * When both players submit YDKs, server auto-creates a ygopro room.
@@ -1189,6 +1256,7 @@ function handleLaunchNeos(payload) {
 
   // Store the latest duel URL for button click
   state._pendingDuelUrl = duelUrl;
+  state._pendingDuelTable = payload.tableId || null;
 
   // Show launch button in the battle lobby
   let container = el('neosDuelContainer');

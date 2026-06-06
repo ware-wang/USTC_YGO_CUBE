@@ -6,6 +6,7 @@ import {
   pollSocketLooper,
   pollSocketLooperWithAgent,
 } from "@/service/executor";
+import { resetDuel } from "@/stores";
 
 import { initSqlite } from "../Layout/utils";
 
@@ -17,6 +18,7 @@ export const connectSrvpro = async (params: {
   enableKuriboh?: boolean;
   replay?: boolean;
   replayData?: ArrayBuffer;
+  reconnect?: boolean;
   customOnConnected?: (conn: WebSocketStream) => void;
 }) => {
   // 初始化sqlite
@@ -40,20 +42,51 @@ export const connectSrvpro = async (params: {
     // execute the event looper
     pollSocketLooper(getUIContainer());
   } else {
-    // connect to the ygopro Server
-    const conn = initSocket(params);
+    let reconnectTimer: number | undefined;
+    let reconnectAttempt = 0;
 
-    // initialize the UI Contaner
-    initUIContainer(conn);
+    const startSocket = (isReconnect: boolean) => {
+      if (isReconnect) {
+        resetDuel();
+      }
 
-    // execute the event looper
+      const conn = initSocket({
+        ...params,
+        customOnConnected: (conn) => {
+          reconnectAttempt = 0;
+          params.customOnConnected?.(conn);
+        },
+        suppressErrorAlert: params.reconnect,
+        onClose: (closedConn, ev) => {
+          if (!params.reconnect) return;
+          if (closedConn.isClosedByClient() || ev.code === 1000) return;
+          if (reconnectTimer !== undefined) return;
 
-    if (params.enableKuriboh) {
+          const delay = Math.min(1000 * 2 ** reconnectAttempt, 10000);
+          reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = undefined;
+            reconnectAttempt += 1;
+            console.info(`[connectSrvpro] reconnecting to ${params.ip}, attempt=${reconnectAttempt}`);
+            startSocket(true);
+          }, delay);
+        },
+      });
+
+      // initialize the UI Container
+      initUIContainer(conn);
+
+      // execute the event looper
       const container = getUIContainer();
-      container.setEnableKuriboh(true);
-      pollSocketLooperWithAgent(container);
-    } else {
-      pollSocketLooper(getUIContainer());
-    }
+      if (params.enableKuriboh) {
+        container.setEnableKuriboh(true);
+        pollSocketLooperWithAgent(container);
+      } else {
+        pollSocketLooper(container);
+      }
+
+      return conn;
+    };
+
+    startSocket(false);
   }
 };

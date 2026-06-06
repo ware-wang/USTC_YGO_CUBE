@@ -60,6 +60,13 @@ export class DuelSession extends EventEmitter {
   get waitingResponsePlayer() {
     return this.#waitingResponse ? this.#lastResponsePlayer : null;
   }
+  getWaitingResponsePayloadFor(player) {
+    if (!this.#waitingResponse || !this.#lastResponseMsg) return null;
+    const view = player === this.#lastResponsePlayer
+      ? this.#lastResponseMsg.playerView(player)
+      : new YGOProMsgWaiting();
+    return Buffer.from(view.toPayload());
+  }
   getDeckSizes() {
     return this.loadedDecks.map((deck) => ({
       main: deck.main.length,

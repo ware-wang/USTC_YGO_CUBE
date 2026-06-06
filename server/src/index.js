@@ -149,7 +149,7 @@ async function main() {
 
   // Create room
   app.post('/api/rooms', (req, res) => {
-    const { playerName, cubeName, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode } = req.body;
+    const { playerName, roomName, cubeName, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode } = req.body;
     if (!playerName || !cubeName) {
       return res.status(400).json({ error: 'playerName and cubeName required' });
     }
@@ -160,8 +160,14 @@ async function main() {
     const ppp = Math.max(packsPerPlayer || 3, 1);
     const cpp = Math.max(cardsPerPack || 15, 5);
 
-    const room = roomManager.createRoom(cubeName, cube.cardIds, maxP, ppp, cpp, password || null, testMode === true);
-    res.json({ roomId: room.id, playerName, hasPassword: !!password });
+    const finalRoomName = String(roomName || '').trim() || `${String(playerName).trim()}的房间`;
+    const room = roomManager.createRoom(cubeName, cube.cardIds, maxP, ppp, cpp, password || null, testMode === true, finalRoomName);
+    res.json({ roomId: room.id, roomName: room.name, playerName, hasPassword: !!password });
+  });
+
+  // List active rooms for lobby
+  app.get('/api/rooms', (_req, res) => {
+    res.json({ rooms: roomManager.listRoomsPublic() });
   });
 
   // Get room info
@@ -178,12 +184,15 @@ async function main() {
     const room = roomManager.getRoom(roomId);
     if (!room) return res.status(404).json({ error: 'Room not found' });
 
-    const tables = duelManager.createBattleTables(room);
+    const existingTables = duelManager.getRoomTables(room.id);
+    const tables = existingTables.length > 0 ? existingTables : duelManager.createBattleTables(room);
     res.json({ tables: tables.map(t => ({
       id: t.id,
       roomId: t.roomId,
       state: t.state,
       seats: t.seats,
+      winner: t.winner ?? null,
+      winnerSeat: t.winnerSeat ?? null,
     }))});
   });
 

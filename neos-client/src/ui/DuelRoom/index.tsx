@@ -71,6 +71,7 @@ export const Component: React.FC = () => {
         ip: srv,
         player: name,
         passWd: pwd,
+        reconnect: true,
       });
       connectingRef.current = false;
       clearTimeout(timeoutId);

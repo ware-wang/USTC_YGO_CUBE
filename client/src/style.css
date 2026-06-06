@@ -30,11 +30,11 @@ body {
 #lobby {
   min-height: 100vh;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 24px;
 }
-.lobby-container { width: min(100%, 520px); text-align: center; }
+.lobby-container { width: min(100%, 860px); text-align: center; }
 .brand-kicker {
   color: var(--accent);
   font-size: 0.78rem;
@@ -117,6 +117,75 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .divider::before { left: 0; }
 .divider::after { right: 0; }
+
+.room-list-panel { margin-top: 16px; }
+.room-list-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.room-list-header h2 { margin-bottom: 0; }
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.room-list-empty {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 14px;
+  text-align: center;
+}
+.room-list-item {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 12px;
+}
+.room-list-item.joinable { cursor: pointer; }
+.room-list-item.joinable:hover,
+.room-list-item.joinable:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.room-list-title {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.room-list-meta {
+  color: var(--text-dim);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  gap: 6px 12px;
+  margin-top: 4px;
+}
+.room-list-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.room-tag {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 8px;
+}
 
 .developer-panel {
   background: var(--bg-card);
@@ -506,16 +575,17 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   color: var(--text);
   cursor: pointer;
   display: flex;
-  font-size: 0.75rem;
+  font-size: 1.35rem;
   font-weight: 700;
-  height: 24px;
+  height: 48px;
   justify-content: center;
   line-height: 1;
   padding: 0;
   position: absolute;
-  right: 8px;
+  left: 8px;
   top: 8px;
-  width: 24px;
+  width: 48px;
+  z-index: 1;
 }
 .card-detail-chip:hover {
   background: var(--accent);
@@ -675,15 +745,30 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .battle-table-card:hover { border-color: var(--accent); }
 .battle-table-card.ready { border-color: var(--green); }
 .battle-table-card.dueling { border-color: var(--orange); }
+.battle-table-card.finished,
 .battle-table-card.completed { border-color: var(--text-dim); }
 .battle-table-card h4 { font-size: 1rem; margin-bottom: 8px; }
 .bt-seat { display: flex; justify-content: space-between; padding: 4px 8px; font-size: 0.85rem; border-radius: 4px; }
 .bt-seat.empty { color: var(--text-dim); font-style: italic; }
 .bt-seat.filled { background: var(--bg-hover); }
 .bt-seat.you { background: rgba(63,185,80,0.1); color: var(--green); }
+.bt-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 10px;
+}
+.bt-hint {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  margin-top: 10px;
+}
 
 /* Resp */
 @media (max-width: 800px) {
+  .room-list-item { grid-template-columns: 1fr; }
+  .room-list-tags { justify-content: flex-start; }
   .battle-table-card { width: 100%; }
   .developer-panel {
     align-items: stretch;

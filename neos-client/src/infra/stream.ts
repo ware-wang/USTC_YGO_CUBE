@@ -4,13 +4,21 @@
 // 因此封装了一个`WebSocketStream`类，当每次Websocket连接中有消息到达时，往流中添加event，
 
 // 同时执行器会不断地从流中获取event进行处理。
+export type WebSocketStreamOptions = {
+  onClose?: (conn: WebSocketStream, ev: CloseEvent) => void;
+  onError?: (conn: WebSocketStream, ev: Event) => void;
+  suppressErrorAlert?: boolean;
+};
+
 export class WebSocketStream {
   public ws: WebSocket;
   stream: ReadableStream;
+  private closedByClient = false;
 
   constructor(
     ip: string,
     onWsOpen?: (conn: WebSocketStream, ev: Event) => any,
+    options: WebSocketStreamOptions = {},
   ) {
     const target = resolveWebSocketTarget(ip);
     this.ws = new WebSocket(target);
@@ -18,14 +26,18 @@ export class WebSocketStream {
       this.ws.onopen = (e) => onWsOpen(this, e);
     }
     this.ws.onerror = (e) => {
-      if (e instanceof ErrorEvent) {
-        alert(`websocket error: ${e.message}`);
-      } else {
-        alert(`websocket connect to ${ip} error`);
+      options.onError?.(this, e);
+      if (!options.suppressErrorAlert) {
+        if (e instanceof ErrorEvent) {
+          alert(`websocket error: ${e.message}`);
+        } else {
+          alert(`websocket connect to ${ip} error`);
+        }
       }
     };
 
     const ws = this.ws;
+    const conn = this;
     this.stream = new ReadableStream({
       start(controller) {
         // 当Websocket有数据到达时，加入队列
@@ -35,8 +47,12 @@ export class WebSocketStream {
         ws.onclose = (ev) => {
           // 后续可能根据断线原因做处理，先暴露出来
           console.info("Websocket closed.", ev);
-          // 下面这行注释掉，因为虽然websocket关掉了，但是已经收到的数据可能还在处理中
-          // controller.close();
+          try {
+            controller.close();
+          } catch (_) {
+            // The stream may already be closed if the browser reports close twice.
+          }
+          options.onClose?.(conn, ev);
         };
       },
       pull(_) {
@@ -85,11 +101,16 @@ export class WebSocketStream {
 
   // 关闭流
   close() {
-    this.ws.close();
+    this.closedByClient = true;
+    this.ws.close(1000);
   }
 
   isClosed(): boolean {
     return this.ws.readyState === WebSocket.CLOSED;
+  }
+
+  isClosedByClient(): boolean {
+    return this.closedByClient;
   }
 }
 

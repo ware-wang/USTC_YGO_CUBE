@@ -99,7 +99,16 @@ export default (data: Uint8Array) => {
       );
     }
 
-    const _extra_p_size = reader.inner.readUint8();
+    const extra_p_size = reader.inner.readUint8();
+    for (let sequence = 0; sequence < extra_p_size; sequence++) {
+      zone_actions.push(
+        new MsgReloadField.ZoneAction({
+          zone: ygopro.CardZone.EXTRA,
+          sequence: extra_size + sequence,
+          position: ygopro.CardPosition.FACEUP_ATTACK,
+        }),
+      );
+    }
 
     // const chain_size = reader.inner.readUint8();
     // const chain_actions = [];

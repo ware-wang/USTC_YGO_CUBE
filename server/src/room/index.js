@@ -3,23 +3,33 @@ import { DraftEngine, DRAFT_STATES } from '../draft/index.js';
 
 const ROOM_EXPIRY_MS = 30 * 60_000; // rooms cleanup after 30min idle
 const IDLE_DISCONNECTED_PLAYER_GRACE_MS = 15_000;
+const EMPTY_ROOM_GRACE_MS = 60_000;
 const CLEANUP_INTERVAL_MS = 15_000;
 
 export class RoomManager {
   constructor() {
     this.rooms = new Map();  // roomId → Room
+    this.roomDeleteListeners = new Set();
     this.cleanupTimer = setInterval(() => this._cleanup(), CLEANUP_INTERVAL_MS);
     this.cleanupTimer.unref?.();
   }
 
-  createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode) {
+  onRoomDeleted(listener) {
+    if (typeof listener !== 'function') return () => {};
+    this.roomDeleteListeners.add(listener);
+    return () => this.roomDeleteListeners.delete(listener);
+  }
+
+  createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode, roomName = null) {
     const id = uuid().slice(0, 8);
     const draft = new DraftEngine(cubeCardIds);
     const room = {
       id,
+      name: sanitizeRoomName(roomName) || `房间 ${id}`,
       cubeName,
       password: password || null,
       players: [],
+      everHadPlayers: false,
       maxPlayers,
       packsPerPlayer,
       cardsPerPack,
@@ -46,11 +56,14 @@ export class RoomManager {
     const existing = room.players.find(p => p.name === playerName);
     if (existing) {
       existing.disconnectedAt = null;
+      room.everHadPlayers = true;
       room.lastActive = Date.now();
       return { player: existing, room, reconnected: true };
     }
 
-    if (room.state === DRAFT_STATES.DRAFTING) return { error: '轮抽已开始，无法加入' };
+    if (room.state !== DRAFT_STATES.IDLE) {
+      return { error: room.state === DRAFT_STATES.DRAFTING ? '轮抽已开始，无法加入' : '轮抽已结束，无法加入' };
+    }
 
     if (room.players.length >= room.maxPlayers) return { error: '房间已满' };
 
@@ -68,6 +81,7 @@ export class RoomManager {
       disconnectedAt: null,
     };
     room.players.push(player);
+    room.everHadPlayers = true;
     room.lastActive = Date.now();
     return { player, room };
   }
@@ -80,7 +94,7 @@ export class RoomManager {
     room.lastActive = Date.now();
 
     if (room.players.length === 0) {
-      this.rooms.delete(roomId);
+      this._deleteRoom(roomId, 'empty');
       return null;
     }
     return room;
@@ -169,6 +183,7 @@ export class RoomManager {
     if (!room) return null;
     return {
       id: room.id,
+      name: room.name,
       cubeName: room.cubeName,
       hasPassword: !!room.password,
       checkDeckSize: room.checkDeckSize,
@@ -187,13 +202,56 @@ export class RoomManager {
     };
   }
 
+  listRoomsPublic() {
+    this._cleanup();
+    return [...this.rooms.values()]
+      .map(room => {
+        const connectedCount = countConnectedPlayers(room);
+        return {
+          id: room.id,
+          name: room.name,
+          cubeName: room.cubeName,
+          hasPassword: !!room.password,
+          playerCount: room.players.length,
+          connectedCount,
+          maxPlayers: room.maxPlayers,
+          packsPerPlayer: room.packsPerPlayer,
+          cardsPerPack: room.cardsPerPack,
+          testMode: room.testMode,
+          state: room.state,
+          canJoin: room.state === DRAFT_STATES.IDLE && room.players.length < room.maxPlayers,
+          created: room.created,
+          lastActive: room.lastActive,
+        };
+      })
+      .filter(room => room.connectedCount > 0)
+      .sort((a, b) => b.lastActive - a.lastActive);
+  }
+
   _cleanup() {
     const now = Date.now();
     for (const [id, room] of this.rooms) {
       this._pruneDisconnectedPlayers(room, now, false);
 
+      if (
+        room.players.length === 0 &&
+        (room.everHadPlayers || now - (room.lastActive || room.created) > EMPTY_ROOM_GRACE_MS)
+      ) {
+        this._deleteRoom(id, 'empty');
+        continue;
+      }
+
+      if (
+        room.players.length > 0 &&
+        countConnectedPlayers(room) === 0 &&
+        now - latestDisconnectedAt(room) > EMPTY_ROOM_GRACE_MS
+      ) {
+        this._deleteRoom(id, 'all_disconnected');
+        continue;
+      }
+
       if (now - room.lastActive > ROOM_EXPIRY_MS) {
-        this.rooms.delete(id);
+        this._deleteRoom(id, 'expired');
       }
     }
   }
@@ -213,4 +271,30 @@ export class RoomManager {
       return now - player.disconnectedAt <= IDLE_DISCONNECTED_PLAYER_GRACE_MS;
     });
   }
+
+  _deleteRoom(roomId, reason) {
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+    this.rooms.delete(roomId);
+    for (const listener of this.roomDeleteListeners) {
+      try {
+        listener(room, reason);
+      } catch (err) {
+        console.warn(`[RoomManager] room delete listener failed: ${err?.message || err}`);
+      }
+    }
+    return room;
+  }
+}
+
+function sanitizeRoomName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+}
+
+function countConnectedPlayers(room) {
+  return room.players.filter(player => !player.disconnectedAt).length;
+}
+
+function latestDisconnectedAt(room) {
+  return Math.max(0, ...room.players.map(player => player.disconnectedAt || 0));
 }

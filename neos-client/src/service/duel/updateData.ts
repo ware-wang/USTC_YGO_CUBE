@@ -16,8 +16,8 @@ export default async (container: Container, updateData: MsgUpdateData) => {
           .filter((card) => card.location.sequence === sequence)
           .at(0);
         if (target) {
-          if (action?.code > 0 && target.code === 0) {
-            // 当本地code为0且action的code大于0时，才从db加载整个meta信息
+          if (action?.code > 0 && target.code !== action.code) {
+            // 服务端给出明确卡号时，以服务端为准；这可以修正额外卡组占位或旧卡号。
             const newMeta = fetchCard(action.code);
             target.code = action.code;
             target.meta = newMeta;

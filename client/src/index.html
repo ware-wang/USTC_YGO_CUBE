@@ -19,6 +19,8 @@
       <h2>创建房间</h2>
       <label>玩家昵称</label>
       <input type="text" id="createName" placeholder="输入昵称" maxlength="12">
+      <label>房间名</label>
+      <input type="text" id="createRoomName" placeholder="例如：今晚四人轮抽" maxlength="24">
       <label>房间密码 <small>(可选，不填则无密码)</small></label>
       <input type="text" id="createPassword" placeholder="留空则不设密码" maxlength="20">
       <label>选择 Cube</label>
@@ -76,6 +78,16 @@
       </div>
     </div>
 
+    <div class="card panel room-list-panel">
+      <div class="room-list-header">
+        <h2>房间列表</h2>
+        <button id="refreshRoomsBtn" class="btn-secondary btn-sm">刷新</button>
+      </div>
+      <div id="roomList" class="room-list">
+        <div class="room-list-empty">正在加载房间...</div>
+      </div>
+    </div>
+
     <div class="developer-panel">
       <div>
         <h2>开发者信息</h2>
@@ -93,6 +105,6 @@
   </div>
 </div>
 
-<script type="module" src="app.js?v=6"></script>
+<script type="module" src="app.js?v=8"></script>
 </body>
 </html>

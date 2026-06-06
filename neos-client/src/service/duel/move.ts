@@ -1,15 +1,21 @@
 import { fetchCard, ygopro } from "@/api";
 import { Container } from "@/container";
 import { AudioActionType, playEffect } from "@/infra/audio";
-import { CardType } from "@/stores";
+import { CardType, isMe } from "@/stores";
 import { callCardMove } from "@/ui/Duel/PlayMat/Card";
 
-import { REASON_DESTROY, REASON_MATERIAL, TYPE_TOKEN } from "../../common";
+import {
+  REASON_DESTROY,
+  REASON_MATERIAL,
+  TYPE_PENDULUM,
+  TYPE_TOKEN,
+} from "../../common";
 
 type MsgMove = ygopro.StocGameMessage.MsgMove;
 const { HAND, GRAVE, REMOVED, DECK, EXTRA, MZONE, SZONE, TZONE } =
   ygopro.CardZone;
-const { FACEDOWN, FACEDOWN_ATTACK, FACEDOWN_DEFENSE } = ygopro.CardPosition;
+const { FACEUP, FACEDOWN, FACEDOWN_ATTACK, FACEDOWN_DEFENSE } =
+  ygopro.CardPosition;
 
 const overlayStack: ygopro.CardLocation[] = [];
 
@@ -166,10 +172,36 @@ export default async (container: Container, move: MsgMove) => {
     }
   }
 
-  // 更新信息
-  target.code = code;
+  // 更新信息。部分视角消息会用 code=0 表示“此移动后的区域不可见”。
+  // 如果目标区域对当前玩家可见，保留原本已经知道的卡号，避免自己的额外卡组出现卡背。
+  const knownCode = code > 0 ? code : target.code;
+  const knownMeta =
+    knownCode > 0 && target.meta.id !== knownCode
+      ? fetchCard(knownCode)
+      : target.meta;
+  const pendulumFromFieldToExtra =
+    knownCode > 0 &&
+    to.zone === EXTRA &&
+    [MZONE, SZONE].includes(from.zone) &&
+    ((knownMeta.data.type ?? 0) & TYPE_PENDULUM) > 0;
+  if (pendulumFromFieldToExtra && isFaceDown(to.position)) {
+    to.position = FACEUP;
+  }
+
+  const nextCode =
+    code > 0
+      ? code
+      : target.code > 0 &&
+        (pendulumFromFieldToExtra || isDestinationVisibleToCurrentPlayer(to))
+      ? target.code
+      : 0;
+  target.code = nextCode;
   target.location = to;
-  if (code === 0) {
+  if (nextCode > 0) {
+    target.meta =
+      target.meta.id === nextCode ? target.meta : fetchCard(nextCode);
+  }
+  if (nextCode === 0) {
     target.revealed = false;
   }
   if (!(from.zone === MZONE && to.zone === MZONE)) {
@@ -227,3 +259,26 @@ export default async (container: Container, move: MsgMove) => {
     }
   }
 };
+
+function isDestinationVisibleToCurrentPlayer(location: ygopro.CardLocation) {
+  if (isMe(location.controller)) return true;
+
+  if (location.zone === GRAVE) return true;
+
+  if (
+    [MZONE, SZONE, TZONE, EXTRA, REMOVED].includes(location.zone) &&
+    !isFaceDown(location.position)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isFaceDown(position?: ygopro.CardPosition) {
+  return (
+    position === FACEDOWN ||
+    position === FACEDOWN_ATTACK ||
+    position === FACEDOWN_DEFENSE
+  );
+}

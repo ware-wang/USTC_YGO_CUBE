@@ -27,6 +27,12 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge,
   duelManagerRef = duelManager;
   duelBridgeRef = duelBridge;
   duelResourceOptionsRef = duelResourceOptions || {};
+  roomManager.onRoomDeleted?.((room, reason) => {
+    clearDraftRoundTimer(room.id);
+    clearRoomDisconnectedDraftPicks(room.id);
+    duelManagerRef?.deleteRoomTables?.(room.id);
+    closeRoomClients(room.id, reason);
+  });
 
   // ── Manual upgrade routing (noServer mode) ──
   const jsonWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
@@ -96,6 +102,8 @@ function handleMessage(ws, msg, roomManager) {
     case 'swap_seat': return handleSwapSeat(ws, payload, roomManager);
     case 'chat': return handleChat(ws, payload, roomManager);
     case 'duel_join_table': return handleDuelJoin(ws, payload);
+    case 'duel_leave_table': return handleDuelLeave(ws, payload);
+    case 'duel_rematch_table': return handleDuelRematch(ws, payload);
     case 'duel_submit_deck': return handleDuelSubmit(ws, payload, roomManager);
     case 'duel_start': return handleDuelStart(ws, payload);
     case 'duel_respond': return handleDuelRespond(ws, payload);
@@ -105,6 +113,8 @@ function handleMessage(ws, msg, roomManager) {
     case 'duel_surrender': return handleDuelSurrender(ws, payload);
     case 'battle_create_tables': return handleBattleCreate(ws, payload, roomManager);
     case 'battle_join_table': return handleDuelJoin(ws, payload);
+    case 'battle_leave_table': return handleDuelLeave(ws, payload);
+    case 'battle_rematch_table': return handleDuelRematch(ws, payload);
     case 'battle_submit_deck': return handleDuelSubmit(ws, payload, roomManager);
     case 'battle_start': return handleDuelStart(ws, payload);
     case 'battle_respond': return handleDuelRespond(ws, payload);
@@ -138,6 +148,31 @@ function broadcastDuel(tableId, exclude, msg) {
       ws.send(JSON.stringify(msg));
     }
   }
+}
+
+function serializeBattleTable(t) {
+  return {
+    id: t.id,
+    roomId: t.roomId,
+    state: t.state,
+    seats: t.seats,
+    winner: t.winner ?? null,
+    winnerSeat: t.winnerSeat ?? null,
+  };
+}
+
+function getOrCreateBattleTables(room) {
+  const existing = duelManagerRef?.getRoomTables?.(room.id) || [];
+  if (existing.length > 0) return existing;
+  return (duelManagerRef?.createBattleTables?.(room) || []).map(serializeBattleTable);
+}
+
+function handleNeosDuelEnded({ tableId, winnerPosition }) {
+  if (!tableId) return;
+  const table = duelManagerRef?.markTableFinished?.(tableId, winnerPosition);
+  if (!table) return;
+  const pub = duelManagerRef.getTablePublic(tableId);
+  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
 }
 
 function sendDuelToTablePlayers(tableId, msg) {
@@ -201,6 +236,16 @@ function clearRoomDisconnectedDraftPicks(roomId) {
       clearTimeout(timer.timeout);
       draftDisconnectTimers.delete(key);
     }
+  }
+}
+
+function closeRoomClients(roomId, reason) {
+  for (const [ws, c] of clients) {
+    if (c.roomId !== roomId) continue;
+    clients.delete(ws);
+    send(ws, { type: 'error', payload: { message: '房间已关闭' } });
+    try { ws.close(4001, `room deleted: ${reason || 'cleanup'}`); }
+    catch {}
   }
 }
 
@@ -339,11 +384,12 @@ function handleDraftAdvanced(roomId, rm, room, result) {
   room.lastActive = Date.now();
 
   if (result.draftComplete) {
-    const tables = duelManagerRef.createBattleTables(room);
-    broadcast(roomId, rm, null, { type: 'draft_complete', payload: { pools: room.draft.getPlayerPools(), tables: tables.map(t => ({
-      id: t.id, roomId: t.roomId, state: t.state, seats: t.seats,
-    })) } });
     room.state = DRAFT_STATES.COMPLETE;
+    const tables = getOrCreateBattleTables(room);
+    broadcast(roomId, rm, null, {
+      type: 'draft_complete',
+      payload: { pools: room.draft.getPlayerPools(), tables },
+    });
     return;
   }
 
@@ -381,6 +427,16 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
     send(ws, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
     const pack = room.draft.getCurrentPack(player.id);
     if (pack) send(ws, { type: 'pack', payload: pack });
+  } else if (room.state === DRAFT_STATES.COMPLETE || room.draft?.state === DRAFT_STATES.COMPLETE) {
+    const tables = getOrCreateBattleTables(room);
+    send(ws, {
+      type: 'draft_complete',
+      payload: {
+        pools: room.draft.getPlayerPools(),
+        tables,
+        resumeView: 'battleLobby',
+      },
+    });
   }
 }
 
@@ -490,8 +546,8 @@ function handleLeave(ws, rm) {
 function handleBattleCreate(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: 'Room not found' } });
-  const tables = duelManagerRef.createBattleTables(room);
-  const payload = { tables: tables.map(t => ({ id: t.id, roomId: t.roomId, state: t.state, seats: t.seats })) };
+  const tables = getOrCreateBattleTables(room);
+  const payload = { tables };
   // Emit both names for compatibility: older clients listen for
   // battle_tables_ready while newer code may expect battle_tables_created.
   broadcast(roomId, rm, null, { type: 'battle_tables_ready', payload });
@@ -505,6 +561,30 @@ function handleDuelJoin(ws, { tableId, seatIndex }) {
     return send(ws, { type: 'error', payload: { message: '对战桌不属于当前房间' } });
   }
   const result = duelManagerRef.joinTable(tableId, client.playerId, seatIndex);
+  if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
+  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+}
+
+function handleDuelLeave(ws, { tableId }) {
+  const client = clients.get(ws);
+  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (!duelManagerRef.tableBelongsToRoom(tableId, client.roomId)) {
+    return send(ws, { type: 'error', payload: { message: '对战桌不属于当前房间' } });
+  }
+  const result = duelManagerRef.leaveTable(tableId, client.playerId);
+  if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
+  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+}
+
+function handleDuelRematch(ws, { tableId }) {
+  const client = clients.get(ws);
+  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (!duelManagerRef.tableBelongsToRoom(tableId, client.roomId)) {
+    return send(ws, { type: 'error', payload: { message: '对战桌不属于当前房间' } });
+  }
+  const result = duelManagerRef.rematchTable(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
   const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
   broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
@@ -560,7 +640,12 @@ async function launchNeosDuel(tableId, roomId) {
     registerPreloadedDecks(passWd, [
       { main: tableDecks.players[0].deck.main || [], extra: tableDecks.players[0].deck.extra || [], side: [] },
       { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [], side: [] },
-    ], { testMode: tableDecks.testMode === true });
+    ], {
+      testMode: tableDecks.testMode === true,
+      tableId,
+      roomId,
+      onDuelEnd: handleNeosDuelEnded,
+    });
 
     const neosUrl = '/neos/duelroom';
     const p1Name = findClientByPlayer(roomId, tableDecks.players[0].id)?.playerName || 'Player1';
@@ -568,7 +653,7 @@ async function launchNeosDuel(tableId, roomId) {
 
     console.log(`[launchNeosDuel] Room "${passWd}" created for table ${tableId}`);
 
-    duelManagerRef.markTableDueling(tableId);
+    duelManagerRef.markTableDueling(tableId, { passWd });
     const tablePub = duelManagerRef.getTablePublic(tableId);
     broadcastDuel(tableId, null, { type: 'duel_table_update', payload: tablePub });
 
