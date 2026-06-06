@@ -40,6 +40,11 @@ class CubeManager {
         const content = fs.readFileSync(path.join(CUBE_DIR, file), 'utf-8');
         const cube = parseYdk(content, file.replace('.ydk', ''));
         if (cube) {
+          this._removeMissingCards(cube, file);
+          if (cube.count === 0) {
+            console.warn(`[Cube] Skipped "${cube.name}" because no cards exist in cards.cdb`);
+            continue;
+          }
           this.cubes.set(cube.name, cube);
           console.log(`[Cube] Loaded "${cube.name}" (${cube.count} cards)`);
         }
@@ -60,6 +65,26 @@ class CubeManager {
   /** Get a cube by name */
   getCube(name) {
     return this.cubes.get(name) || null;
+  }
+
+  _removeMissingCards(cube, file) {
+    if (!cardDB.ready) return;
+
+    const validIds = [];
+    const missingIds = [];
+    for (const id of cube.cardIds) {
+      if (cardDB.getById(id)) validIds.push(id);
+      else missingIds.push(id);
+    }
+
+    if (!missingIds.length) return;
+
+    cube.cardIds = validIds;
+    cube.cardDetails = null;
+    cube.count = validIds.length;
+    console.warn(
+      `[Cube] ${file}: ignored ${missingIds.length} card(s) missing from cards.cdb: ${missingIds.join(', ')}`,
+    );
   }
 }
 

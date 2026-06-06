@@ -210,14 +210,18 @@ function handleStart(ws, { roomId }, rm) {
   }
 }
 
-function handleConfirmPick(ws, { roomId, cardIndex }, rm) {
+function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
 
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: '房间不存在' } });
+  const expectedCardId = Number(cardId);
+  if (!Number.isInteger(expectedCardId) || expectedCardId <= 0) {
+    return send(ws, { type: 'error', payload: { message: '客户端版本过旧，请刷新页面后重新选择' } });
+  }
 
-  const result = room.draft.confirmPick(client.playerId, cardIndex);
+  const result = room.draft.confirmPick(client.playerId, cardIndex, expectedCardId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 
   send(ws, {

@@ -11,7 +11,8 @@ import cardDB from '../card-db/index.js';
  *
  * State:
  *   packIndex      — which of the P packs we're on (0-based)
- *   direction      — 1 = pass right, -1 = pass left (flips each pack)
+ *   direction      — 1 = pass to next seat, -1 = pass to previous seat
+ *                    (flips each pack; UI labels this right/left)
  *   playerPacks    — Map<playerId, Array<Array<cardId>>>
  *                     playerPacks[p][packIndex] is the CURRENT active pack
  *                   note: after rotation the array entry is mutated in place
@@ -52,11 +53,7 @@ export class DraftEngine {
     this.direction = 1;
     this.confirmedThisRound = new Set();
     this.totalPicksMade = 0;
-    this.players = players.map(p => ({
-      id: p.id,
-      name: p.name,
-      seatIndex: p.seatIndex,
-    }));
+    this.players = this._sortPlayersBySeat(players);
 
     const totalCards = players.length * packsPerPlayer * this.cardsPerPack;
     const pool = this._buildPool(totalCards);
@@ -85,12 +82,17 @@ export class DraftEngine {
     const packs = this.playerPacks.get(playerId);
     if (!packs || this.packIndex >= packs.length) return null;
     const cards = packs[this.packIndex];
-    const details = cards.map(id => cardDB.getCardFull(id)).filter(Boolean);
+    const details = cards
+      .map((id, packSlot) => {
+        const card = cardDB.getCardFull(id);
+        return card ? { ...card, packSlot } : null;
+      })
+      .filter(Boolean);
     return {
       cards: details,
       packIndex: this.packIndex,
       totalPacks: this.packsPerPlayer,
-      remaining: cards.length,
+      remaining: details.length,
       direction: this.direction,
       picked: this.playerPools.get(playerId)?.length || 0,
       pickedCards: this.getPlayerPoolCards(playerId),
@@ -114,7 +116,7 @@ export class DraftEngine {
   /* ------------------------------------------------------------------ */
   /*  Picking                                                           */
   /* ------------------------------------------------------------------ */
-  confirmPick(playerId, cardIndex) {
+  confirmPick(playerId, cardIndex, expectedCardId = null) {
     if (this.state !== DRAFT_STATES.DRAFTING) {
       return { success: false, error: '轮抽未开始' };
     }
@@ -126,11 +128,17 @@ export class DraftEngine {
       return { success: false, error: '无效的包' };
     }
     const pack = packs[this.packIndex];
-    if (cardIndex < 0 || cardIndex >= pack.length) {
+    const slot = Number(cardIndex);
+    if (!Number.isInteger(slot) || slot < 0 || slot >= pack.length) {
       return { success: false, error: '无效的卡牌索引' };
     }
 
-    const pickedId = pack.splice(cardIndex, 1)[0];
+    const pickedId = pack[slot];
+    if (expectedCardId !== null && Number(expectedCardId) !== pickedId) {
+      return { success: false, error: '卡包已更新或客户端缓存过旧，请刷新后重试' };
+    }
+
+    pack.splice(slot, 1);
     this.playerPools.get(playerId).push(pickedId);
     this.confirmedThisRound.add(playerId);
     this.totalPicksMade++;
@@ -222,6 +230,23 @@ export class DraftEngine {
       cards = cards.concat(more);
     }
     return cards.slice(0, needed);
+  }
+
+  _sortPlayersBySeat(players) {
+    return players
+      .map((p, originalIndex) => ({
+        id: p.id,
+        name: p.name,
+        seatIndex: p.seatIndex,
+        originalIndex,
+      }))
+      .sort((a, b) => {
+        const aSeat = Number.isFinite(a.seatIndex) ? a.seatIndex : Number.MAX_SAFE_INTEGER;
+        const bSeat = Number.isFinite(b.seatIndex) ? b.seatIndex : Number.MAX_SAFE_INTEGER;
+        if (aSeat !== bSeat) return aSeat - bSeat;
+        return a.originalIndex - b.originalIndex;
+      })
+      .map(({ originalIndex, ...p }) => p);
   }
 
   _shuffle(arr) {

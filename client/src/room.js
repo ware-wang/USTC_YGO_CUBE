@@ -112,6 +112,7 @@ function makeCardEl(card, opts) {
   const div = document.createElement('div');
   div.className = 'card-item';
   div.dataset.id = card.id;
+  if (Number.isInteger(card.packSlot)) div.dataset.packSlot = String(card.packSlot);
   div.innerHTML = cardHTML(card, opts.small);
 
   if (opts.draggable) {
@@ -175,8 +176,7 @@ function handleDetailPick() {
   if (!state.detailCard || state.detailSource !== 'draft') return;
   if (state.draft.phase !== 'choosing') return;
 
-  // Find the card element in packArea
-  const nel = document.querySelector('#packArea .card-item[data-id="' + state.detailCard.id + '"]');
+  const nel = findPackCardEl(state.detailCard);
   handleSelectCard(state.detailCard, nel);
   closeCardDetail();
 }
@@ -621,7 +621,7 @@ function handleSelectCard(card, cardEl) {
   // Select
   state.draft.selectedCard = card;
   state.draft.selectedCardEl = cardEl;
-  cardEl.classList.add('selected');
+  if (cardEl) cardEl.classList.add('selected');
   show(el('confirmPickBtn'));
   setText('draftStatus', '已选: ' + card.name + ' — 点击「确认选择」提交');
 }
@@ -629,14 +629,19 @@ function handleSelectCard(card, cardEl) {
 function handleConfirmPick() {
   if (state.draft.phase !== 'choosing' || !state.draft.selectedCard) return;
 
-  const idx = state.draft.currentPack.indexOf(state.draft.selectedCard);
-  if (idx < 0) return;
+  const selected = state.draft.selectedCard;
+  const idx = Number.isInteger(selected.packSlot)
+    ? selected.packSlot
+    : state.draft.currentPack.indexOf(selected);
+  if (!Number.isInteger(idx) || idx < 0) return;
 
   state.draft.phase = 'waiting';
-  wsSend('confirm_pick', { roomId: state.roomId, cardIndex: idx });
+  wsSend('confirm_pick', { roomId: state.roomId, cardIndex: idx, cardId: selected.id });
 
-  state.draft.selectedCardEl.classList.add('confirmed');
-  state.draft.selectedCardEl.classList.remove('selected');
+  if (state.draft.selectedCardEl) {
+    state.draft.selectedCardEl.classList.add('confirmed');
+    state.draft.selectedCardEl.classList.remove('selected');
+  }
   hide(el('confirmPickBtn'));
   setText('draftStatus', '已确认，等待其他玩家...');
 }
@@ -669,7 +674,7 @@ function autoPick() {
   if (!state.draft.selectedCard) {
     const idx = Math.floor(Math.random() * cards.length);
     state.draft.selectedCard = cards[idx];
-    state.draft.selectedCardEl = document.querySelector('#packArea .card-item[data-id="' + cards[idx].id + '"]');
+    state.draft.selectedCardEl = findPackCardEl(cards[idx]);
   }
 
   handleConfirmPick();
@@ -684,8 +689,15 @@ function autoPickOne() {
 
   const idx = Math.floor(Math.random() * cards.length);
   state.draft.selectedCard = cards[idx];
-  state.draft.selectedCardEl = document.querySelector('#packArea .card-item[data-id="' + cards[idx].id + '"]');
+  state.draft.selectedCardEl = findPackCardEl(cards[idx]);
   handleConfirmPick();
+}
+
+function findPackCardEl(card) {
+  if (Number.isInteger(card?.packSlot)) {
+    return document.querySelector('#packArea .card-item[data-pack-slot="' + card.packSlot + '"]');
+  }
+  return document.querySelector('#packArea .card-item[data-id="' + card.id + '"]');
 }
 
 function startAutoDraft() {
