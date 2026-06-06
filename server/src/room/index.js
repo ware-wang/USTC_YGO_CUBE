@@ -1,8 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import { DraftEngine, DRAFT_STATES } from '../draft/index.js';
 
-const ROOM_EXPIRY_MS = 30 * 60_000; // rooms cleanup after 30min idle
-const IDLE_DISCONNECTED_PLAYER_GRACE_MS = 15_000;
 const EMPTY_ROOM_GRACE_MS = 60_000;
 const CLEANUP_INTERVAL_MS = 15_000;
 
@@ -115,9 +113,9 @@ export class RoomManager {
   startDraft(roomId) {
     const room = this.rooms.get(roomId);
     if (!room) return { error: '房间不存在' };
-    this._pruneDisconnectedPlayers(room, Date.now(), true);
     if (room.players.length < 2) return { error: '至少需要2名玩家' };
     if (room.state === DRAFT_STATES.DRAFTING) return { error: '轮抽已开始' };
+    if (room.state === DRAFT_STATES.COMPLETE) return { error: '轮抽已结束' };
 
     room.draft.init(room.players, room.packsPerPlayer, {
       cardsPerPack: room.cardsPerPack,
@@ -231,8 +229,6 @@ export class RoomManager {
   _cleanup() {
     const now = Date.now();
     for (const [id, room] of this.rooms) {
-      this._pruneDisconnectedPlayers(room, now, false);
-
       if (
         room.players.length === 0 &&
         (room.everHadPlayers || now - (room.lastActive || room.created) > EMPTY_ROOM_GRACE_MS)
@@ -240,36 +236,9 @@ export class RoomManager {
         this._deleteRoom(id, 'empty');
         continue;
       }
-
-      if (
-        room.players.length > 0 &&
-        countConnectedPlayers(room) === 0 &&
-        now - latestDisconnectedAt(room) > EMPTY_ROOM_GRACE_MS
-      ) {
-        this._deleteRoom(id, 'all_disconnected');
-        continue;
-      }
-
-      if (now - room.lastActive > ROOM_EXPIRY_MS) {
-        this._deleteRoom(id, 'expired');
-      }
+      // Keep rooms with participant identities even if everyone is currently
+      // disconnected; reconnect uses room id + player name.
     }
-  }
-
-  _pruneDisconnectedPlayers(room, now, forceIdlePrune) {
-    room.players = room.players.filter((player) => {
-      if (!player.disconnectedAt) return true;
-
-      if (room.state !== DRAFT_STATES.IDLE) {
-        return true;
-      }
-
-      if (forceIdlePrune) {
-        return false;
-      }
-
-      return now - player.disconnectedAt <= IDLE_DISCONNECTED_PLAYER_GRACE_MS;
-    });
   }
 
   _deleteRoom(roomId, reason) {
@@ -293,8 +262,4 @@ function sanitizeRoomName(name) {
 
 function countConnectedPlayers(room) {
   return room.players.filter(player => !player.disconnectedAt).length;
-}
-
-function latestDisconnectedAt(room) {
-  return Math.max(0, ...room.players.map(player => player.disconnectedAt || 0));
 }

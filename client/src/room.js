@@ -374,6 +374,7 @@ function setupHandlers() {
 
   wsClient.on('draft_complete', (msg) => {
     stopTimer();
+    const alreadyHadLocalPool = getAllDraftedCards().length > 0;
     state.draft.phase = 'done';
     state.draft.autoDraft = false;
     hide(el('autoDraftBtn'));
@@ -381,10 +382,12 @@ function setupHandlers() {
     const myPool = msg.payload.pools[state.playerId];
     if (myPool) {
       cacheCards(myPool.cards || []);
-      state.results.pool = myPool.cards || [];
-      state.results.main = [];
-      state.results.extra = [];
-      state.results.side = [];
+      if (!alreadyHadLocalPool) {
+        state.results.pool = myPool.cards || [];
+        state.results.main = [];
+        state.results.extra = [];
+        state.results.side = [];
+      }
     }
     // Store tables for battle lobby
     if (msg.payload.tables) {

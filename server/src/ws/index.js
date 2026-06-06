@@ -150,6 +150,14 @@ function broadcastDuel(tableId, exclude, msg) {
   }
 }
 
+function broadcastRoomBattleTables(roomId) {
+  const tables = duelManagerRef?.getRoomTables?.(roomId) || [];
+  broadcast(roomId, null, null, {
+    type: 'battle_tables_ready',
+    payload: { tables },
+  });
+}
+
 function serializeBattleTable(t) {
   return {
     id: t.id,
@@ -171,8 +179,7 @@ function handleNeosDuelEnded({ tableId, winnerPosition }) {
   if (!tableId) return;
   const table = duelManagerRef?.markTableFinished?.(tableId, winnerPosition);
   if (!table) return;
-  const pub = duelManagerRef.getTablePublic(tableId);
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+  broadcastRoomBattleTables(table.roomId);
 }
 
 function sendDuelToTablePlayers(tableId, msg) {
@@ -452,6 +459,7 @@ function handleStart(ws, { roomId }, rm) {
 
   sendCurrentPacks(roomId, room);
   scheduleDraftRoundTimer(roomId, rm, room);
+  scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
 }
 
 function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
@@ -516,14 +524,16 @@ function handleLeave(ws, rm) {
   clients.delete(ws);
 
   const currentRoom = rm.getRoom(client.roomId);
-  if (isDraftingRoom(currentRoom)) {
+  if (currentRoom?.state !== DRAFT_STATES.IDLE) {
     const room = rm.disconnectPlayer(client.roomId, client.playerId);
     if (room) {
       broadcast(client.roomId, rm, null, {
         type: 'room_update',
         payload: { room: rm.getRoomPublic(client.roomId) },
       });
-      scheduleDisconnectedDraftPick(client.roomId, client.playerId, rm, room);
+      if (isDraftingRoom(room)) {
+        scheduleDisconnectedDraftPick(client.roomId, client.playerId, rm, room);
+      }
     }
     try { ws.close(1000, 'leave_room'); }
     catch {}
@@ -562,8 +572,7 @@ function handleDuelJoin(ws, { tableId, seatIndex }) {
   }
   const result = duelManagerRef.joinTable(tableId, client.playerId, seatIndex);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
-  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+  broadcastRoomBattleTables(client.roomId);
 }
 
 function handleDuelLeave(ws, { tableId }) {
@@ -574,8 +583,7 @@ function handleDuelLeave(ws, { tableId }) {
   }
   const result = duelManagerRef.leaveTable(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
-  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+  broadcastRoomBattleTables(client.roomId);
 }
 
 function handleDuelRematch(ws, { tableId }) {
@@ -586,8 +594,7 @@ function handleDuelRematch(ws, { tableId }) {
   }
   const result = duelManagerRef.rematchTable(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
-  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+  broadcastRoomBattleTables(client.roomId);
 }
 
 async function handleDuelSubmit(ws, { tableId, ydkContent }, rm) {
@@ -600,8 +607,7 @@ async function handleDuelSubmit(ws, { tableId, ydkContent }, rm) {
   const result = duelManagerRef.submitDeck(tableId, client.playerId, ydkContent, room);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
   send(ws, { type: 'duel_deck_submitted', payload: { success: true, bothReady: result.bothReady } });
-  const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
-  broadcastDuel(tableId, null, { type: 'duel_table_update', payload: pub });
+  broadcastRoomBattleTables(client.roomId);
 
   if (result.justBecameReady) {
     await launchNeosDuel(tableId, client.roomId);
@@ -654,8 +660,7 @@ async function launchNeosDuel(tableId, roomId) {
     console.log(`[launchNeosDuel] Room "${passWd}" created for table ${tableId}`);
 
     duelManagerRef.markTableDueling(tableId, { passWd });
-    const tablePub = duelManagerRef.getTablePublic(tableId);
-    broadcastDuel(tableId, null, { type: 'duel_table_update', payload: tablePub });
+    broadcastRoomBattleTables(roomId);
 
     sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
