@@ -1053,6 +1053,8 @@ function showBattleLobby() {
  * Uses a click-to-open button to avoid popup blockers.
  */
 function handleLaunchNeos(payload) {
+  if (!isDuelLaunchForCurrentPlayer(payload)) return;
+
   if (payload.error) {
     alert('对战启动失败: ' + payload.error);
     return;
@@ -1129,6 +1131,23 @@ function handleLaunchNeos(payload) {
     const btn = el('openDuelNewWindowBtn');
     if (btn) btn.remove();
   }
+}
+
+function isDuelLaunchForCurrentPlayer(payload) {
+  if (!payload) return false;
+
+  if (Array.isArray(payload.playerIds)) {
+    return payload.playerIds.includes(state.playerId);
+  }
+
+  if (!payload.tableId) return true;
+  const table = state.battle.tables.find(t => t.id === payload.tableId);
+  if (!table) return true;
+
+  return table.seats.some(seat => {
+    const pid = typeof seat === 'object' ? seat?.id : seat;
+    return pid === state.playerId;
+  });
 }
 
 function backToResults() {

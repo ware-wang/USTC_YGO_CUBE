@@ -336,6 +336,37 @@ npm run build
 grep -R "等待对方操作\\|抽卡阶段\\|请选择要发动的效果" -n dist/assets
 ```
 
+### 7.3.10 多人多桌时其他桌误进第一桌
+
+典型症状：
+
+- 4 人或更多玩家轮抽结束后创建多张对战桌。
+- 第一桌两人提交卡组并启动 neos 后，其他桌玩家也看到“对战已就绪”或自动打开同一个 neos 房间。
+- 其他桌玩家连接 7911 时被拒绝，表现为无法进入或房间已满。
+
+优先检查：
+
+- `server/src/ws/index.js` 中启动 neos 的 `duel_launch_neos` 是否只发给该 table 的两个 seat 玩家。
+- `client/src/room.js` 的 `handleLaunchNeos()` 是否会过滤 `payload.playerIds` / `payload.tableId`，不是本桌玩家时必须忽略。
+- `DuelManager.joinTable()` 清理旧座位时是否只清同一个 room 下的桌，不能跨 room 清座。
+
+当前修复后的预期：
+
+- `duel_table_update` 仍广播给整个轮抽房间，用于所有人同步桌位状态。
+- `duel_launch_neos` 和启动失败提示只发送给该桌两名玩家。
+- neos 启动后该桌状态变为 `dueling`，其他桌仍可继续入座和提交卡组。
+- `ygopro-ws` 会复用断线留下的空 seat，避免重新打开同一个 duelUrl 时因数组空洞误判满员。
+
+验证：
+
+```bash
+node server/test-battle-tables.mjs
+node --check server/src/ws/index.js
+node --check server/src/duel-manager/index.js
+node --check server/src/duel-bridge/ygopro-ws.js
+node --check --input-type=module < client/src/room.js
+```
+
 ### 7.4 某些卡开局前报无法装载
 
 通常先分两类看：

@@ -39,10 +39,17 @@ export class DuelManager {
     if (t.state !== 'waiting') return { error: '对战已开始或结束' };
     if (seatIndex < 0 || seatIndex > 1) return { error: '无效座位' };
     if (t.seats[seatIndex]) return { error: '座位已有人' };
-    for (const [, ot] of this.tables)
+    for (const [, ot] of this.tables) {
+      if (ot.roomId !== t.roomId) continue;
       for (let i = 0; i < 2; i++) if (ot.seats[i] === playerId) ot.seats[i] = null;
+    }
     t.seats[seatIndex] = playerId;
     return { success: true, table: t };
+  }
+
+  tableBelongsToRoom(tableId, roomId) {
+    const t = this.tables.get(tableId);
+    return Boolean(t && t.roomId === roomId);
   }
 
   submitDeck(tableId, playerId, ydk, room = null) {
@@ -82,6 +89,18 @@ export class DuelManager {
       if (t.roomId === roomId)
         list.push({ id: t.id, state: t.state, seats: t.seats.map(id => id ? { id } : null), winner: t.winner });
     return list;
+  }
+
+  getTableSeatIds(tableId) {
+    const t = this.tables.get(tableId);
+    return t ? [...t.seats] : [];
+  }
+
+  markTableDueling(tableId) {
+    const t = this.tables.get(tableId);
+    if (!t) return null;
+    t.state = 'dueling';
+    return t;
   }
 
   /**

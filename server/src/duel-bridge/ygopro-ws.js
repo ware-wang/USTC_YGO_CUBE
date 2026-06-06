@@ -127,19 +127,21 @@ export function handleYgoproConnection(ws, options = {}) {
 
             currentRoom = getOrCreateRoom(passWd);
 
-            // Assign position
-            if (currentRoom.players.length >= 2) {
+            // Assign position. Disconnected players leave null seats, so reuse
+            // seat 0/1 instead of using Array.length as the fullness check.
+            const openPosition = [0, 1].find((index) => !currentRoom.players[index]);
+            if (openPosition === undefined) {
               // Room full → send error and make observer? For now, error
               ws.send(buildStocErrorMsg(null, 1, 0)); // JOINERROR, code=0 → generic join error
               return;
             }
-            playerPosition = currentRoom.players.length;
-            currentRoom.players.push({
+            playerPosition = openPosition;
+            currentRoom.players[playerPosition] = {
               ws,
               name: playerName,
               ready: false,
               deck: null,
-            });
+            };
 
             // Send JOIN_GAME confirmation
             // Get opponent name for the join response
@@ -171,7 +173,7 @@ export function handleYgoproConnection(ws, options = {}) {
               }
             }
 
-            console.log(`[ygopro-ws] Room "${passWd}": ${currentRoom.players.length}/2 players`);
+            console.log(`[ygopro-ws] Room "${passWd}": ${currentRoom.players.filter(Boolean).length}/2 players`);
 
             // ── Auto-ready for preloaded-deck rooms ──────────────────
             // If this room has preloaded decks from cube-draft, auto-mark
@@ -190,7 +192,7 @@ export function handleYgoproConnection(ws, options = {}) {
               console.log(`[ygopro-ws] ${playerName} auto-readied (preloaded room)`);
 
               // Check if both players are now ready → auto-start duel
-              if (currentRoom.players.length >= 2 &&
+              if (currentRoom.players.filter(Boolean).length >= 2 &&
                   currentRoom.players[0]?.ready &&
                   currentRoom.players[1]?.ready) {
                 console.log(`[ygopro-ws] Both players ready in preloaded room "${passWd}", auto-starting duel`);
@@ -228,7 +230,7 @@ export function handleYgoproConnection(ws, options = {}) {
               console.log(`[ygopro-ws] ${playerName} is ready in room "${currentRoom.passWd}"`);
 
               // Check if both players are ready
-              if (currentRoom.players.length >= 2 &&
+              if (currentRoom.players.filter(Boolean).length >= 2 &&
                   currentRoom.players[0]?.ready &&
                   currentRoom.players[1]?.ready) {
                 await startDuel(currentRoom);
@@ -254,7 +256,7 @@ export function handleYgoproConnection(ws, options = {}) {
           case CTOS_HS_START: {
             // Host requested start — check if both ready
             if (currentRoom && playerPosition === 0) {
-              if (currentRoom.players.length >= 2 &&
+              if (currentRoom.players.filter(Boolean).length >= 2 &&
                   currentRoom.players[0]?.ready &&
                   currentRoom.players[1]?.ready) {
                 await startDuel(currentRoom);
@@ -340,7 +342,11 @@ export function handleYgoproConnection(ws, options = {}) {
       }
 
       // Remove player from room
-      if (playerPosition >= 0 && playerPosition < currentRoom.players.length) {
+      if (
+        playerPosition >= 0 &&
+        playerPosition < currentRoom.players.length &&
+        currentRoom.players[playerPosition]?.ws === ws
+      ) {
         currentRoom.players[playerPosition] = null;
       }
 

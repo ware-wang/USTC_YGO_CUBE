@@ -755,3 +755,54 @@ npm run build
 - `curl -I http://localhost:3132/neos/` 返回 200。
 - `curl http://localhost:3132/api/cubes` 正常。
 - 构建后的 bundle 内可以检索到 `等待对方操作`、`抽卡阶段`、`请选择要发动的效果` 等 fallback 文本。
+
+### 修复多人多桌对战串台
+
+用户反馈：
+
+- 单人/单桌对战基本正常。
+- 多人轮抽后开启多个对战桌时，第一桌进入 neos 对战后，其他桌玩家好像无法进入自己的对战。
+
+根因：
+
+- `server/src/ws/index.js` 的 `broadcastDuel()` 注释说是广播给一张对战桌的两名玩家，但实际按 `roomId` 广播给整个轮抽房间。
+- 第一桌双方提交卡组后，`duel_launch_neos` 被发给了同房间所有玩家。
+- `client/src/room.js` 的 `handleLaunchNeos()` 没有过滤 `payload.tableId` 或玩家 ID，所有收到事件的人都会打开第一桌的 `cube_<tableId>` neos 房间。
+- neos 二进制房间最多 2 人，其他桌玩家误连第一桌时会被拒绝，于是表现为“其他人无法进入”。
+
+修复：
+
+- `server/src/ws/index.js`
+  - 保留房间级桌位同步：`duel_table_update` 仍发给同一轮抽房间所有玩家。
+  - 新增 table-only 发送路径：`duel_launch_neos` 和启动失败提示只发给该桌 seat 上的两个玩家。
+  - `handleDuelJoin()` / `handleDuelSubmit()` 增加 table-room 归属校验，防止跨房间 tableId 串用。
+  - neos 房间注册成功后把桌状态标成 `dueling`，再广播桌位状态。
+- `server/src/duel-manager/index.js`
+  - `joinTable()` 清理旧座位时只清同一个 room 的桌，不再跨 room 清座。
+  - 增加 `tableBelongsToRoom()`、`getTableSeatIds()`、`markTableDueling()`。
+- `client/src/room.js`
+  - `handleLaunchNeos()` 先判断当前玩家是否属于 `payload.playerIds` 或 `payload.tableId` 对应桌位；不是本桌玩家时直接忽略。
+- `client/src/room.html`
+  - `room.js` 版本号从 `v=7` 提到 `v=8`，避免浏览器缓存旧的 battle lobby 逻辑。
+- `server/src/duel-bridge/ygopro-ws.js`
+  - YGOPro 房间复用断线留下的空 seat，不再只用 `players.length` 判断满员。
+  - close 时只清理属于当前 ws 的 seat，避免误清新连接。
+- 新增 `server/test-battle-tables.mjs` 覆盖同房间换桌、跨房间同 playerId 不互相清座、table-room 归属和 `dueling` 状态。
+
+验证：
+
+```bash
+node --check server/src/ws/index.js
+node --check server/src/duel-manager/index.js
+node --check server/src/duel-bridge/ygopro-ws.js
+node --check --input-type=module < client/src/room.js
+node server/test-battle-tables.mjs
+```
+
+隔离端口验证：
+
+- `PORT=3132 YGOPRO_PROXY_PORT=7912 ./start.sh` 可启动。
+- `curl http://localhost:3132/api/cubes` 正常。
+- `curl -I http://localhost:3132/` 返回 200。
+- `curl -I http://localhost:3132/neos/` 返回 200。
+- `curl http://localhost:3132/room.js` 可看到 `isDuelLaunchForCurrentPlayer()` 和 `playerIds` 过滤逻辑。

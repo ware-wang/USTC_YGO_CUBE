@@ -125,11 +125,32 @@ function broadcast(roomId, rm, exclude, msg) {
 }
 
 function broadcastDuel(tableId, exclude, msg) {
-  // Broadcast to both players at a duel table
+  // Broadcast table status to everyone in the draft room so the lobby stays in sync.
   const table = duelManagerRef?.getTablePublic?.(tableId);
   if (!table) return;
   for (const [ws, c] of clients) {
     if (c.roomId === table.roomId && ws !== exclude && ws.readyState === 1) {
+      ws.send(JSON.stringify(msg));
+    }
+  }
+}
+
+function sendDuelToTablePlayers(tableId, msg) {
+  const table = duelManagerRef?.getTablePublic?.(tableId);
+  if (!table) return;
+
+  const playerIds = new Set(
+    (table.seats || [])
+      .map(seat => typeof seat === 'object' ? seat?.id : seat)
+      .filter(Boolean),
+  );
+
+  for (const [ws, c] of clients) {
+    if (
+      c.roomId === table.roomId &&
+      playerIds.has(c.playerId) &&
+      ws.readyState === 1
+    ) {
       ws.send(JSON.stringify(msg));
     }
   }
@@ -292,6 +313,9 @@ function handleBattleCreate(ws, { roomId }, rm) {
 function handleDuelJoin(ws, { tableId, seatIndex }) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (!duelManagerRef.tableBelongsToRoom(tableId, client.roomId)) {
+    return send(ws, { type: 'error', payload: { message: '对战桌不属于当前房间' } });
+  }
   const result = duelManagerRef.joinTable(tableId, client.playerId, seatIndex);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
   const pub = duelManagerRef.getTablePublic(tableId, client.playerId);
@@ -301,6 +325,9 @@ function handleDuelJoin(ws, { tableId, seatIndex }) {
 async function handleDuelSubmit(ws, { tableId, ydkContent }, rm) {
   const client = clients.get(ws);
   if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (!duelManagerRef.tableBelongsToRoom(tableId, client.roomId)) {
+    return send(ws, { type: 'error', payload: { message: '对战桌不属于当前房间' } });
+  }
   const room = rm.getRoom(client.roomId);
   const result = duelManagerRef.submitDeck(tableId, client.playerId, ydkContent, room);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
@@ -322,7 +349,7 @@ async function launchNeosDuel(tableId, roomId) {
 
   const deckValidationError = validateNeosDecks(tableDecks);
   if (deckValidationError) {
-    broadcastDuel(tableId, null, {
+    sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: { error: deckValidationError },
     });
@@ -331,7 +358,7 @@ async function launchNeosDuel(tableId, roomId) {
 
   const scriptValidationError = validateNeosDeckScripts(tableDecks);
   if (scriptValidationError) {
-    broadcastDuel(tableId, null, {
+    sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: { error: scriptValidationError },
     });
@@ -353,19 +380,24 @@ async function launchNeosDuel(tableId, roomId) {
 
     console.log(`[launchNeosDuel] Room "${passWd}" created for table ${tableId}`);
 
-    broadcastDuel(tableId, null, {
+    duelManagerRef.markTableDueling(tableId);
+    const tablePub = duelManagerRef.getTablePublic(tableId);
+    broadcastDuel(tableId, null, { type: 'duel_table_update', payload: tablePub });
+
+    sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: {
         passWd,
         neosUrl,
         tableId,
+        playerIds: tableDecks.players.map(p => p.id),
         players: [p1Name, p2Name],
         instructions: `打开链接后会自动带入房间密码 ${passWd} 并尝试连接当前服务器；如果失败，可在页面里手动重连。`,
       },
     });
   } catch (e) {
     console.error('[launchNeosDuel] Failed:', e.message);
-    broadcastDuel(tableId, null, {
+    sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: { error: '启动对战房间失败: ' + e.message },
     });
