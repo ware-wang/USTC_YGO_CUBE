@@ -41,7 +41,7 @@ npm start
 - `CardDB Loaded`
 - `DuelBridge Ready`
 - `Cube Loaded`
-- `Cube Draft running on http://localhost:3131`
+- `USTC-OnlineCube running on http://localhost:3131`
 - `YGOPro WS proxy on ws://localhost:7911`
 
 ## 4. 快速健康检查

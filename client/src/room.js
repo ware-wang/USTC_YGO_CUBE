@@ -1,5 +1,5 @@
 /**
- * Cube Draft - Room/Draft/Results Page
+ * USTC-OnlineCube - Room/Draft/Results Page
  * Loaded from lobby with ?roomId=xxx&name=xxx&password=xxx (optional)
  */
 import { wsClient } from './ws/client.js';
@@ -33,6 +33,7 @@ const state = {
     timer: null, seconds: 60, phase: 'idle',
     selectedCard: null, selectedCardEl: null, remainingInPack: 0,
     autoDraft: false,
+    pickedCards: [],
   },
   results: { main: [], extra: [], side: [], pool: [] },
   cardCache: {},
@@ -242,6 +243,7 @@ function setupHandlers() {
     state.draft.selectedCard = null;
     state.draft.selectedCardEl = null;
     state.draft.autoDraft = false;
+    state.draft.pickedCards = [];
     showView('draft');
     setText('roundInfo', '第 1/' + state.draft.totalPacks + ' 包');
     setText('draftDirection', '');
@@ -251,6 +253,7 @@ function setupHandlers() {
     hide(el('stopAutoDraftBtn'));
     setText('draftStatus', '准备开始...');
     show(el('draftStatus'));
+    renderDraftPickedCards();
   });
 
   wsClient.on('pack', (msg) => {
@@ -265,6 +268,7 @@ function setupHandlers() {
     state.draft.selectedCard = null;
     state.draft.selectedCardEl = null;
     cacheCards(state.draft.currentPack);
+    setDraftPickedCards(p.pickedCards || []);
 
     const isTestMode = state.room?.testMode === true;
 
@@ -303,6 +307,7 @@ function setupHandlers() {
   wsClient.on('pick_result', (msg) => {
     const r = msg.payload;
     if (!r.success) return;
+    if (r.pickedCards) setDraftPickedCards(r.pickedCards);
     stopTimer();
     state.draft.phase = 'waiting';
 
@@ -559,6 +564,43 @@ function renderPack() {
   }
 }
 
+function setDraftPickedCards(cards) {
+  state.draft.pickedCards = Array.isArray(cards) ? cards : [];
+  cacheCards(state.draft.pickedCards);
+  renderDraftPickedCards();
+}
+
+function renderDraftPickedCards() {
+  const main = state.draft.pickedCards.filter(card => !isExtraType(card.type || 0));
+  const extra = state.draft.pickedCards.filter(card => isExtraType(card.type || 0));
+
+  setText('draftPickedTotal', state.draft.pickedCards.length + ' 张');
+  setText('draftPickedMainCount', '(' + main.length + ')');
+  setText('draftPickedExtraCount', '(' + extra.length + ')');
+  renderDraftPickedZone('draftPickedMain', main, '尚未选择主卡');
+  renderDraftPickedZone('draftPickedExtra', extra, '尚未选择额外');
+}
+
+function renderDraftPickedZone(zoneId, cards, emptyText) {
+  const zone = el(zoneId);
+  if (!zone) return;
+  clear(zone);
+
+  if (!cards.length) {
+    const empty = document.createElement('div');
+    empty.className = 'draft-picked-empty';
+    empty.textContent = emptyText;
+    zone.appendChild(empty);
+    return;
+  }
+
+  for (const card of cards) {
+    const cel = makeCardEl(card, { small: true });
+    cel.addEventListener('click', () => showCardDetail(card, 'pool'));
+    zone.appendChild(cel);
+  }
+}
+
 function handleSelectCard(card, cardEl) {
   if (state.draft.phase !== 'choosing') return;
 
@@ -757,7 +799,7 @@ function buildYdk() {
     ids(state.results.main),
     ids(state.results.extra),
     ids(state.results.side),
-    'Cube Draft',
+    'USTC-OnlineCube',
   );
 }
 
@@ -818,7 +860,7 @@ async function buildTestModeYdk() {
     .slice(0, 15)
     .map(card => card.id);
 
-  return buildYdkFromIds(mainIds, extraIds, [], 'Cube Draft Test Mode Pool');
+  return buildYdkFromIds(mainIds, extraIds, [], 'USTC-OnlineCube Test Mode Pool');
 }
 
 async function fetchCardScriptStatus(ids) {

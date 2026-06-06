@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cube Draft - 房间</title>
+<title>USTC-OnlineCube - 房间</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -54,12 +54,30 @@
     <span id="draftDirection"></span>
     <span id="draftTimer" class="draft-timer">剩余 60s</span>
   </div>
-  <div id="packArea" class="pack-area"></div>
-  <div class="draft-actions">
-    <button id="confirmPickBtn" class="btn-primary btn-large hidden">确认选择</button>
-    <button id="autoDraftBtn" class="btn-primary btn-large hidden" style="background:var(--accent)">⚡ 一键自动轮抽</button>
-    <button id="stopAutoDraftBtn" class="btn-secondary hidden">停止自动轮抽</button>
-    <span id="draftStatus" class="hint"></span>
+  <div class="draft-layout">
+    <div class="draft-main">
+      <div id="packArea" class="pack-area"></div>
+      <div class="draft-actions">
+        <button id="confirmPickBtn" class="btn-primary btn-large hidden">确认选择</button>
+        <button id="autoDraftBtn" class="btn-primary btn-large hidden" style="background:var(--accent)">⚡ 一键自动轮抽</button>
+        <button id="stopAutoDraftBtn" class="btn-secondary hidden">停止自动轮抽</button>
+        <span id="draftStatus" class="hint"></span>
+      </div>
+    </div>
+    <aside class="draft-picks-panel">
+      <div class="draft-picks-header">
+        <h3>已选卡牌</h3>
+        <span id="draftPickedTotal">0 张</span>
+      </div>
+      <div class="draft-pick-section">
+        <h4>主卡 <small id="draftPickedMainCount">(0)</small></h4>
+        <div id="draftPickedMain" class="draft-picked-grid"></div>
+      </div>
+      <div class="draft-pick-section">
+        <h4>额外 <small id="draftPickedExtraCount">(0)</small></h4>
+        <div id="draftPickedExtra" class="draft-picked-grid"></div>
+      </div>
+    </aside>
   </div>
 </div>
 
@@ -134,6 +152,6 @@
   <div id="battleTables" class="battle-tables"></div>
 </div>
 
-<script type="module" src="room.js?v=8"></script>
+<script type="module" src="room.js?v=9"></script>
 </body>
 </html>

@@ -82,7 +82,7 @@ export PATH="$HOME/.nvm/versions/node/v20.20.2/bin:$PATH"
 - `CardDB Loaded ... cards.cdb`
 - `DuelBridge Ready`
 - `Cube Loaded ...`
-- `Cube Draft running on http://localhost:3131`
+- `USTC-OnlineCube running on http://localhost:3131`
 - `neos-ts duel client at http://localhost:3131/neos/`
 - `YGOPro WS proxy on ws://localhost:7911`
 

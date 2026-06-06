@@ -806,3 +806,78 @@ node server/test-battle-tables.mjs
 - `curl -I http://localhost:3132/` 返回 200。
 - `curl -I http://localhost:3132/neos/` 返回 200。
 - `curl http://localhost:3132/room.js` 可看到 `isDuelLaunchForCurrentPlayer()` 和 `playerIds` 过滤逻辑。
+
+### 轮抽中显示本人已选卡牌
+
+需求：
+
+- 轮抽进行中，玩家需要随时查看自己已经挑选了哪些卡。
+- 已选卡按主卡和额外卡分开显示。
+
+实现：
+
+- `server/src/draft/index.js`
+  - `getCurrentPack()` 增加 `pickedCards`，只返回当前查询玩家自己的已选卡详情。
+  - 新增 `getPlayerPoolCards(playerId)`，把 `playerPools` 中的卡号转换为 `cards.cdb` 详情。
+- `server/src/ws/index.js`
+  - `pick_result` 返回当前玩家最新 `pickedCards`，玩家确认选择后面板立即刷新。
+  - 后续 `pack` 也会带 `pickedCards`，刷新/补包时可恢复当前已选列表。
+- `client/src/room.html`
+  - 轮抽视图增加右侧“已选卡牌”面板，分为主卡和额外。
+  - `room.js` 版本号从 `v=8` 提到 `v=9`，避免浏览器缓存旧轮抽界面。
+- `client/src/room.js`
+  - 增加 `state.draft.pickedCards`。
+  - `pack` / `pick_result` 都会调用 `setDraftPickedCards()`。
+  - 已选卡面板按 `isExtraType()` 分为主卡/额外，点击已选卡可打开卡片详情。
+- `client/src/style.css`
+  - 桌面端使用“卡包区 + 已选侧栏”布局。
+  - 移动端自动改为上下布局。
+
+验证：
+
+```bash
+node --check server/src/draft/index.js
+node --check server/src/ws/index.js
+node --check --input-type=module < client/src/room.js
+git diff --check
+```
+
+行为验证：
+
+- 使用 `DraftEngine` 初始化 2 人轮抽。
+- 玩家 `p1` 确认选择后，`getPlayerPoolCards('p1')` 返回 1 张卡片详情。
+
+### 主界面品牌、开发者信息与轮抽界面美化
+
+需求：
+
+- 主界面增加开发者信息：
+  - warren
+  - `warren.wang0826@gmail.com`
+  - QQ：1094676771
+- 增加反馈 Bug 按钮，使用 `mailto:warren.wang0826@gmail.com`。
+- 项目名称改为 `USTC-OnlineCube`。
+- 轮抽界面更美观。
+
+实现：
+
+- `client/src/index.html`
+  - 首页标题改为 `USTC-OnlineCube`。
+  - 增加开发者信息面板。
+  - 增加 `反馈 Bug` mailto 链接。
+  - `app.js` 版本号从 `v=5` 提到 `v=6`，并修掉多余 `</script>`。
+- `client/src/room.html` / `client/src/duel.html`
+  - 页面标题改为 `USTC-OnlineCube`。
+- `client/src/style.css`
+  - 首页品牌区、开发者信息区、反馈按钮增加样式。
+  - 轮抽 header、当前卡包区域、操作区和已选卡侧栏增加边框、间距和移动端适配。
+- `server/package.json` / `server/package-lock.json`
+  - 包名改为 `ustc-onlinecube`。
+- `server/src/index.js`
+  - 启动日志改为 `USTC-OnlineCube running ...`。
+- `README.md`、`OPERATIONS.md`、`llm-docs/DEBUGGING_RUNBOOK.md`
+  - 更新启动日志说明。
+- `neos-client/neos.config*.json`
+  - 本地服务器显示名改为 `USTC-OnlineCube (local)`。
+- `client/src/room.js`、`server/src/draft/index.js`
+  - YDK created-by 标识改为 `USTC-OnlineCube`。

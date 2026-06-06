@@ -1,5 +1,5 @@
 /**
- * WebSocket client for Cube Draft
+ * WebSocket client for USTC-OnlineCube
  * ES module — auto-connecting with reconnect support
  */
 

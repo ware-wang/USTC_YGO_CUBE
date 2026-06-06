@@ -332,7 +332,7 @@ async function main() {
   });
 
   httpServer.listen(PORT, () => {
-    console.log(`[Server] Cube Draft running on http://localhost:${PORT}`);
+    console.log(`[Server] USTC-OnlineCube running on http://localhost:${PORT}`);
     console.log(`[Server] neos-ts duel client at http://localhost:${PORT}/neos/`);
   });
 

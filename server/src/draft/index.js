@@ -93,7 +93,13 @@ export class DraftEngine {
       remaining: cards.length,
       direction: this.direction,
       picked: this.playerPools.get(playerId)?.length || 0,
+      pickedCards: this.getPlayerPoolCards(playerId),
     };
+  }
+
+  getPlayerPoolCards(playerId) {
+    const pool = this.playerPools.get(playerId) || [];
+    return pool.map(id => cardDB.getCardFull(id)).filter(Boolean);
   }
 
   /** How many cards remain in the current pack across all players */
@@ -253,7 +259,7 @@ export class DraftEngine {
       else main.push(id);
     }
     return [
-      '#created by Cube Draft',
+      '#created by USTC-OnlineCube',
       '#main',
       ...main.map(String),
       '#extra',

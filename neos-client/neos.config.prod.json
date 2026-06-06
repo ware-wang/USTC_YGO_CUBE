@@ -2,7 +2,7 @@
   "version": 4962,
   "servers": [
     {
-      "name": "Cube Draft (local)",
+      "name": "USTC-OnlineCube (local)",
       "ip": "127.0.0.1",
       "port": "7911"
     },

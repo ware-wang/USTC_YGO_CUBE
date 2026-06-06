@@ -1,5 +1,5 @@
 /**
- * Cube Draft - Lobby Page
+ * USTC-OnlineCube - Lobby Page
  * Handles room creation and joining. Redirects to room.html on success.
  */
 

@@ -1,4 +1,4 @@
-# Cube Draft — 游戏王 Cube 轮抽 + 在线对战
+# USTC-OnlineCube — 游戏王 Cube 轮抽 + 在线对战
 
 基于 ygopro 卡牌数据库的网页端 Cube 轮抽系统，集成 **neos-ts** 在线对战引擎。支持多人轮抽、组卡、YDK 导出，以及**在浏览器中进行实时对战**。
 
@@ -338,7 +338,7 @@ PORT=3131 YGOPRO_PROXY_PORT=7911 ./start.sh
 
 - `CardDB Loaded ... cards.cdb`
 - `DuelBridge Ready`
-- `Cube Draft running on http://localhost:3131`
+- `USTC-OnlineCube running on http://localhost:3131`
 - `YGOPro WS proxy on ws://localhost:7911`
 
 如果脚本目录被识别到了，还会看到类似：

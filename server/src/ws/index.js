@@ -220,7 +220,16 @@ function handleConfirmPick(ws, { roomId, cardIndex }, rm) {
   const result = room.draft.confirmPick(client.playerId, cardIndex);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 
-  send(ws, { type: 'pick_result', payload: { pickedCardId: result.pickedCardId, success: true, confirmedCount: result.confirmedCount, totalPlayers: result.totalPlayers } });
+  send(ws, {
+    type: 'pick_result',
+    payload: {
+      pickedCardId: result.pickedCardId,
+      success: true,
+      confirmedCount: result.confirmedCount,
+      totalPlayers: result.totalPlayers,
+      pickedCards: room.draft.getPlayerPoolCards(client.playerId),
+    },
+  });
 
   const who = [];
   for (const id of room.draft.confirmedThisRound) {
