@@ -347,5 +347,5 @@ export interface Option {
 
 function systemTextOrFallback(id: number, fallback: string): string {
   const value = fetchStrings(Region.System, id);
-  return value === "?" ? fallback : value;
+  return value === "?" || value === `系统提示 ${id}` ? fallback : value;
 }
