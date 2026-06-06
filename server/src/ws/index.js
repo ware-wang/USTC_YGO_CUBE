@@ -14,6 +14,10 @@ import { getCardScriptStatus } from '../duel-bridge/card-script-status.js';
 
 /** Map ws → { roomId, playerId, playerName, duelSessionId?, duelPosition? } */
 const clients = new Map();
+const DRAFT_PICK_TIMEOUT_MS = parseInt(process.env.DRAFT_PICK_TIMEOUT_MS || '60000', 10);
+const DRAFT_DISCONNECT_GRACE_MS = parseInt(process.env.DRAFT_DISCONNECT_GRACE_MS || '10000', 10);
+const draftRoundTimers = new Map();
+const draftDisconnectTimers = new Map();
 
 let duelManagerRef = null;
 let duelBridgeRef = null;
@@ -47,6 +51,7 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge,
           type: 'room_update',
           payload: { room: roomManager.getRoomPublic(client.roomId) },
         });
+        scheduleDisconnectedDraftPick(client.roomId, client.playerId, roomManager, room);
       }
     });
   });
@@ -169,6 +174,185 @@ function findClientByPlayer(roomId, playerId) {
   return null;
 }
 
+function isDraftingRoom(room) {
+  return room?.state === DRAFT_STATES.DRAFTING && room.draft?.state === DRAFT_STATES.DRAFTING;
+}
+
+function draftDisconnectKey(roomId, playerId) {
+  return `${roomId}:${playerId}`;
+}
+
+function clearDraftRoundTimer(roomId) {
+  const timer = draftRoundTimers.get(roomId);
+  if (timer) clearTimeout(timer.timeout);
+  draftRoundTimers.delete(roomId);
+}
+
+function clearDisconnectedDraftPick(roomId, playerId) {
+  const key = draftDisconnectKey(roomId, playerId);
+  const timer = draftDisconnectTimers.get(key);
+  if (timer) clearTimeout(timer.timeout);
+  draftDisconnectTimers.delete(key);
+}
+
+function clearRoomDisconnectedDraftPicks(roomId) {
+  for (const [key, timer] of draftDisconnectTimers) {
+    if (key.startsWith(`${roomId}:`)) {
+      clearTimeout(timer.timeout);
+      draftDisconnectTimers.delete(key);
+    }
+  }
+}
+
+function scheduleDraftRoundTimer(roomId, rm, room = null) {
+  room = room || rm.getRoom(roomId);
+  if (!isDraftingRoom(room)) return;
+
+  clearDraftRoundTimer(roomId);
+  const round = room.draft.pickRound;
+  const timeout = setTimeout(() => {
+    draftRoundTimers.delete(roomId);
+    autoPickUnconfirmed(roomId, rm, round, 'timeout');
+  }, DRAFT_PICK_TIMEOUT_MS);
+  timeout.unref?.();
+  draftRoundTimers.set(roomId, { timeout, round });
+}
+
+function scheduleDisconnectedDraftPick(roomId, playerId, rm, room = null) {
+  room = room || rm.getRoom(roomId);
+  if (!isDraftingRoom(room)) return;
+  if (room.draft.confirmedThisRound?.has(playerId)) return;
+
+  const player = room.players.find(p => p.id === playerId);
+  if (!player?.disconnectedAt) return;
+
+  clearDisconnectedDraftPick(roomId, playerId);
+  const round = room.draft.pickRound;
+  const key = draftDisconnectKey(roomId, playerId);
+  const timeout = setTimeout(() => {
+    draftDisconnectTimers.delete(key);
+    const currentRoom = rm.getRoom(roomId);
+    if (!isDraftingRoom(currentRoom)) return;
+    if (currentRoom.draft.pickRound !== round) return;
+    if (currentRoom.draft.confirmedThisRound?.has(playerId)) return;
+
+    const currentPlayer = currentRoom.players.find(p => p.id === playerId);
+    if (!currentPlayer?.disconnectedAt) return;
+
+    autoPickPlayer(roomId, rm, currentRoom, playerId, 'disconnect');
+  }, DRAFT_DISCONNECT_GRACE_MS);
+  timeout.unref?.();
+  draftDisconnectTimers.set(key, { timeout, round });
+}
+
+function scheduleDisconnectedDraftPicksForRoom(roomId, rm, room = null) {
+  room = room || rm.getRoom(roomId);
+  if (!isDraftingRoom(room)) return;
+  for (const player of room.players) {
+    if (player.disconnectedAt) scheduleDisconnectedDraftPick(roomId, player.id, rm, room);
+  }
+}
+
+function autoPickUnconfirmed(roomId, rm, round, reason) {
+  const room = rm.getRoom(roomId);
+  if (!isDraftingRoom(room)) return;
+  if (room.draft.pickRound !== round) return;
+
+  const players = room.draft.players || room.players;
+  for (const player of players) {
+    if (room.draft.pickRound !== round) break;
+    if (room.draft.confirmedThisRound.has(player.id)) continue;
+    const result = autoPickPlayer(roomId, rm, room, player.id, reason);
+    if (result?.allConfirmed) break;
+  }
+}
+
+function autoPickPlayer(roomId, rm, room, playerId, reason) {
+  const result = room.draft.autoPick(playerId);
+  if (result.error) {
+    console.warn(`[Draft] Auto-pick failed room=${roomId} player=${playerId}: ${result.error}`);
+    return result;
+  }
+
+  room.lastActive = Date.now();
+  sendPickResult(roomId, room, playerId, result, true, reason);
+  broadcastConfirmState(roomId, rm, room, result);
+
+  if (result.allConfirmed) {
+    handleDraftAdvanced(roomId, rm, room, result);
+  }
+
+  return result;
+}
+
+function sendPickResult(roomId, room, playerId, result, autoPicked = false, reason = null) {
+  const pws = findPlayerWs(roomId, playerId);
+  if (!pws) return;
+
+  send(pws, {
+    type: 'pick_result',
+    payload: {
+      pickedCardId: result.pickedCardId,
+      success: true,
+      confirmedCount: result.confirmedCount,
+      totalPlayers: result.totalPlayers,
+      pickedCards: room.draft.getPlayerPoolCards(playerId),
+      autoPicked,
+      reason,
+    },
+  });
+}
+
+function broadcastConfirmState(roomId, rm, room, result = null) {
+  const allConfirmed = result?.allConfirmed === true;
+  const players = room.draft.players || room.players;
+  const confirmedIds = allConfirmed
+    ? players.map(p => p.id)
+    : [...room.draft.confirmedThisRound];
+  const namesById = new Map(room.players.map(p => [p.id, p.name]));
+  const who = confirmedIds
+    .map(id => namesById.get(id) || players.find(p => p.id === id)?.name)
+    .filter(Boolean);
+
+  broadcast(roomId, rm, null, {
+    type: 'confirm_update',
+    payload: {
+      confirmedCount: allConfirmed ? players.length : room.draft.confirmedThisRound.size,
+      totalPlayers: players.length,
+      whoConfirmed: who,
+    },
+  });
+}
+
+function sendCurrentPacks(roomId, room) {
+  const players = room.draft.players || room.players;
+  for (const p of players) {
+    const pack = room.draft.getCurrentPack(p.id);
+    const pws = findPlayerWs(roomId, p.id);
+    if (pws && pack) send(pws, { type: 'pack', payload: pack });
+  }
+}
+
+function handleDraftAdvanced(roomId, rm, room, result) {
+  clearDraftRoundTimer(roomId);
+  clearRoomDisconnectedDraftPicks(roomId);
+  room.lastActive = Date.now();
+
+  if (result.draftComplete) {
+    const tables = duelManagerRef.createBattleTables(room);
+    broadcast(roomId, rm, null, { type: 'draft_complete', payload: { pools: room.draft.getPlayerPools(), tables: tables.map(t => ({
+      id: t.id, roomId: t.roomId, state: t.state, seats: t.seats,
+    })) } });
+    room.state = DRAFT_STATES.COMPLETE;
+    return;
+  }
+
+  sendCurrentPacks(roomId, room);
+  broadcast(roomId, rm, null, { type: 'round_update', payload: { packIndex: room.draft.packIndex, totalPacks: room.draft.packsPerPlayer, direction: room.draft.direction } });
+  scheduleDraftRoundTimer(roomId, rm, room);
+  scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
+}
+
 // ── Room / Draft handlers ────────────────────
 
 function handleJoin(ws, { roomId, playerName, password }, rm) {
@@ -184,6 +368,7 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
   }
 
   clients.set(ws, { roomId: room.id, playerId: player.id, playerName });
+  clearDisconnectedDraftPick(room.id, player.id);
 
   const pub = rm.getRoomPublic(roomId);
   send(ws, { type: 'joined', payload: { playerId: player.id, playerName: player.name, room: pub, reconnected: !!result.reconnected } });
@@ -191,6 +376,12 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
   if (pub.chat?.length) send(ws, { type: 'chat_history', payload: { messages: pub.chat } });
 
   broadcast(roomId, rm, ws, { type: 'room_update', payload: { room: rm.getRoomPublic(roomId) } });
+
+  if (isDraftingRoom(room)) {
+    send(ws, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
+    const pack = room.draft.getCurrentPack(player.id);
+    if (pack) send(ws, { type: 'pack', payload: pack });
+  }
 }
 
 function handleStart(ws, { roomId }, rm) {
@@ -203,11 +394,8 @@ function handleStart(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   broadcast(roomId, rm, null, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
 
-  for (const p of room.players) {
-    const pack = room.draft.getCurrentPack(p.id);
-    const pws = findPlayerWs(roomId, p.id);
-    if (pws) send(pws, { type: 'pack', payload: { ...pack, picked: room.draft.playerPools.get(p.id)?.length || 0 } });
-  }
+  sendCurrentPacks(roomId, room);
+  scheduleDraftRoundTimer(roomId, rm, room);
 }
 
 function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
@@ -223,43 +411,14 @@ function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
 
   const result = room.draft.confirmPick(client.playerId, cardIndex, expectedCardId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  room.lastActive = Date.now();
+  clearDisconnectedDraftPick(roomId, client.playerId);
 
-  send(ws, {
-    type: 'pick_result',
-    payload: {
-      pickedCardId: result.pickedCardId,
-      success: true,
-      confirmedCount: result.confirmedCount,
-      totalPlayers: result.totalPlayers,
-      pickedCards: room.draft.getPlayerPoolCards(client.playerId),
-    },
-  });
-
-  const who = [];
-  for (const id of room.draft.confirmedThisRound) {
-    const p = room.players.find(pl => pl.id === id);
-    if (p) who.push(p.name);
-  }
-  broadcast(roomId, rm, null, { type: 'confirm_update', payload: { confirmedCount: room.draft.confirmedThisRound.size, totalPlayers: room.players.length, whoConfirmed: who } });
+  sendPickResult(roomId, room, client.playerId, result);
+  broadcastConfirmState(roomId, rm, room, result);
 
   if (!result.allConfirmed) return;
-
-  if (result.draftComplete) {
-    const tables = duelManagerRef.createBattleTables(room);
-    broadcast(roomId, rm, null, { type: 'draft_complete', payload: { pools: room.draft.getPlayerPools(), tables: tables.map(t => ({
-      id: t.id, roomId: t.roomId, state: t.state, seats: t.seats,
-    })) } });
-    room.state = DRAFT_STATES.COMPLETE;
-    return;
-  }
-
-  for (const p of room.players) {
-    const pack = room.draft.getCurrentPack(p.id);
-    const pws = findPlayerWs(roomId, p.id);
-    if (pws) send(pws, { type: 'pack', payload: pack });
-  }
-
-  broadcast(roomId, rm, null, { type: 'round_update', payload: { packIndex: room.draft.packIndex, totalPacks: room.draft.packsPerPlayer, direction: room.draft.direction } });
+  handleDraftAdvanced(roomId, rm, room, result);
 }
 
 function handleGetPack(ws, { roomId }, rm) {
@@ -299,6 +458,22 @@ function handleLeave(ws, rm) {
   const client = clients.get(ws);
   if (!client) return;
   clients.delete(ws);
+
+  const currentRoom = rm.getRoom(client.roomId);
+  if (isDraftingRoom(currentRoom)) {
+    const room = rm.disconnectPlayer(client.roomId, client.playerId);
+    if (room) {
+      broadcast(client.roomId, rm, null, {
+        type: 'room_update',
+        payload: { room: rm.getRoomPublic(client.roomId) },
+      });
+      scheduleDisconnectedDraftPick(client.roomId, client.playerId, rm, room);
+    }
+    try { ws.close(1000, 'leave_room'); }
+    catch {}
+    return;
+  }
+
   const room = rm.removePlayer(client.roomId, client.playerId);
   if (room) {
     broadcast(client.roomId, rm, null, {

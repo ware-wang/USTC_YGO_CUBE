@@ -41,6 +41,7 @@ export class DraftEngine {
     this.playerPools = new Map(); // playerId -> Array<cardId>
     this.confirmedThisRound = null; // Set<playerId>
     this.totalPicksMade = 0;     // total picks across ALL players — for display
+    this.pickRound = 0;          // increments after each table-wide pick resolves
   }
 
   /* ------------------------------------------------------------------ */
@@ -53,6 +54,7 @@ export class DraftEngine {
     this.direction = 1;
     this.confirmedThisRound = new Set();
     this.totalPicksMade = 0;
+    this.pickRound = 0;
     this.players = this._sortPlayersBySeat(players);
 
     const totalCards = players.length * packsPerPlayer * this.cardsPerPack;
@@ -96,6 +98,7 @@ export class DraftEngine {
       direction: this.direction,
       picked: this.playerPools.get(playerId)?.length || 0,
       pickedCards: this.getPlayerPoolCards(playerId),
+      confirmed: this.confirmedThisRound?.has(playerId) || false,
     };
   }
 
@@ -144,20 +147,23 @@ export class DraftEngine {
     this.totalPicksMade++;
 
     const allConfirmed = this.confirmedThisRound.size >= this.players.length;
+    const confirmedCount = this.confirmedThisRound.size;
+    const totalPlayers = this.players.length;
 
     if (!allConfirmed) {
       return {
         success: true,
         pickedCardId: pickedId,
         allConfirmed: false,
-        confirmedCount: this.confirmedThisRound.size,
-        totalPlayers: this.players.length,
+        confirmedCount,
+        totalPlayers,
       };
     }
 
     // -- every player has locked in this round --
     this.rotatePacks();
     this.confirmedThisRound.clear();
+    this.pickRound++;
 
     // Is the current pack exhausted ?
     if (!this._cardsLeftInCurrentPack()) {
@@ -171,6 +177,8 @@ export class DraftEngine {
           success: true,
           pickedCardId: pickedId,
           allConfirmed: true,
+          confirmedCount,
+          totalPlayers,
           draftComplete: true,
         };
       }
@@ -179,6 +187,8 @@ export class DraftEngine {
         success: true,
         pickedCardId: pickedId,
         allConfirmed: true,
+        confirmedCount,
+        totalPlayers,
         draftComplete: false,
         packIndex: this.packIndex,
         direction: this.direction,
@@ -189,6 +199,8 @@ export class DraftEngine {
       success: true,
       pickedCardId: pickedId,
       allConfirmed: true,
+      confirmedCount,
+      totalPlayers,
       draftComplete: false,
       packIndex: this.packIndex,
       direction: this.direction,
@@ -216,6 +228,34 @@ export class DraftEngine {
     for (let i = 0; i < n; i++) {
       this.playerPacks.get(this.players[i].id)[this.packIndex] = rotated[i];
     }
+  }
+
+  autoPick(playerId) {
+    if (this.state !== DRAFT_STATES.DRAFTING) {
+      return { success: false, error: '轮抽未开始' };
+    }
+    if (this.confirmedThisRound.has(playerId)) {
+      return { success: false, error: '你已在本轮确认过选择' };
+    }
+
+    const packs = this.playerPacks.get(playerId);
+    if (!packs || this.packIndex >= packs.length) {
+      return { success: false, error: '无效的包' };
+    }
+
+    const pack = packs[this.packIndex];
+    if (!pack || pack.length === 0) {
+      return { success: false, error: '当前卡包没有可选择的卡' };
+    }
+
+    const visibleSlots = [];
+    for (let i = 0; i < pack.length; i++) {
+      if (cardDB.getCardFull(pack[i])) visibleSlots.push(i);
+    }
+
+    const candidates = visibleSlots.length ? visibleSlots : pack.map((_, i) => i);
+    const slot = candidates[Math.floor(Math.random() * candidates.length)];
+    return this.confirmPick(playerId, slot, pack[slot]);
   }
 
   /* ------------------------------------------------------------------ */

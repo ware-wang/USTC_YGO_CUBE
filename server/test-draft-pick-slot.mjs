@@ -39,4 +39,21 @@ assert.equal(result.pickedCardId, gearfriedId);
 assert.deepEqual(draft.playerPools.get('p1'), [gearfriedId]);
 assert.deepEqual(draft.playerPacks.get('p1')[0], [missingCardId]);
 
+const autoDraft = new DraftEngine([
+  missingCardId,
+  gearfriedId,
+  blueEyesId,
+  darkMagicianId,
+]);
+autoDraft._shuffle = arr => arr;
+autoDraft.init([
+  { id: 'p1', name: 'P1', seatIndex: 0 },
+  { id: 'p2', name: 'P2', seatIndex: 1 },
+], 1, { cardsPerPack: 2 });
+
+const autoResult = autoDraft.autoPick('p1');
+assert.equal(autoResult.success, true);
+assert.equal(autoResult.pickedCardId, gearfriedId, 'server auto-pick should choose a visible/loadable card first');
+assert.deepEqual(autoDraft.playerPools.get('p1'), [gearfriedId]);
+
 console.log('[test-draft-pick-slot] ok');

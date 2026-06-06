@@ -263,7 +263,8 @@ function setupHandlers() {
     state.draft.currentPack = p.cards || [];
     state.draft.direction = p.direction || 1;
     state.draft.remainingInPack = p.remaining;
-    state.draft.phase = 'choosing';
+    const alreadyConfirmed = p.confirmed === true;
+    state.draft.phase = alreadyConfirmed ? 'waiting' : 'choosing';
     state.draft.seconds = 60;
     state.draft.selectedCard = null;
     state.draft.selectedCardEl = null;
@@ -274,7 +275,9 @@ function setupHandlers() {
 
     setText('roundInfo', '第 ' + (state.draft.packIndex+1) + '/' + state.draft.totalPacks + ' 包 (剩' + (state.draft.remainingInPack||0) + '张)');
     setText('draftDirection', state.draft.direction===1 ? '→ 向右传' : '← 向左传');
-    if (state.draft.autoDraft) {
+    if (alreadyConfirmed) {
+      setText('draftStatus', '已确认，等待其他玩家...');
+    } else if (state.draft.autoDraft) {
       setText('draftStatus', '⚡ 自动轮抽中...');
     } else {
       setText('draftStatus', '点击卡牌查看详情并选择');
@@ -282,7 +285,7 @@ function setupHandlers() {
     hide(el('confirmPickBtn'));
 
     // Show/hide auto-draft buttons based on test mode
-    if (isTestMode) {
+    if (isTestMode && !alreadyConfirmed) {
       if (state.draft.autoDraft) {
         hide(el('autoDraftBtn'));
         show(el('stopAutoDraftBtn'));
@@ -296,11 +299,16 @@ function setupHandlers() {
     }
 
     renderPack();
-    startTimer();
+    if (alreadyConfirmed) {
+      stopTimer();
+      setText('draftTimer', '已确认');
+    } else {
+      startTimer();
 
-    // Auto-pick if auto-draft is on
-    if (state.draft.autoDraft) {
-      setTimeout(() => autoPickOne(), 300);
+      // Auto-pick if auto-draft is on
+      if (state.draft.autoDraft) {
+        setTimeout(() => autoPickOne(), 300);
+      }
     }
   });
 
