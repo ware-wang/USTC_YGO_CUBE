@@ -307,6 +307,35 @@ testMode 下建议：
   - `Menu.SelectionComplete`
 - 如果仍然显示 `?`，先看 `neos-client/src/ui/I18N/Source/*/translation.json` 中对应 key 是否存在。
 
+### 7.3.9 对战中的系统提示全是 `?`
+
+这通常不是 Node / nvm 版本问题，而是 neos 前端语言包问题。
+
+先检查：
+
+```bash
+sed -n '1,40p' neos-client/public/ygopro-database/zh-CN/strings.conf
+sed -n '1,40p' neos-client/dist/ygopro-database/zh-CN/strings.conf
+```
+
+如果只看到 `# Empty strings`，说明 `Region.System` 的提示编号没有中文文本来源，前端会把阶段、等待、效果选择、胜利原因等系统提示渲染成 `?`。
+
+当前修复后的预期：
+
+- `neos-client/src/api/strings.ts` 会优先使用 `strings.conf`。
+- 如果 `strings.conf` 缺项或本地缓存里是旧的 `?`，会回退到内置常用中文系统提示。
+- 未覆盖的编号会显示为 `系统提示 <id>`，不再显示裸 `?`。
+- 解析 `strings.conf` 时保留第三列之后的完整文本，避免带空格的提示被截断。
+
+验证：
+
+```bash
+cd neos-client
+npx eslint src/api/strings.ts
+npm run build
+grep -R "等待对方操作\\|抽卡阶段\\|请选择要发动的效果" -n dist/assets
+```
+
 ### 7.4 某些卡开局前报无法装载
 
 通常先分两类看：

@@ -716,3 +716,42 @@ npm run build
 
 - `npm run lint` 全量仍会失败，原因是 neos-client 中已有多个未触碰文件存在 Prettier 旧问题；本次改动文件的定向 lint 已通过。
 - 这台环境没有安装 Playwright Chromium，因此没有做真实浏览器截图级验证；已用 Vite 构建、HTTP 健康检查和协议联调覆盖主要回归面。
+
+### 修复对战中系统提示全是问号
+
+处理顺序：
+
+- 先按用户要求提交当前版本快照：
+  - commit: `8babd42`
+  - message: `Fix duel card loadability and visibility`
+- 然后定位 duel 内系统提示显示为 `?` 的根因。
+
+根因：
+
+- `neos-client/public/ygopro-database/zh-CN/strings.conf` 和构建产物里的 `neos-client/dist/ygopro-database/zh-CN/strings.conf` 都只有 `# Empty strings`。
+- `initStrings()` 依赖该文件把 `!system_<id>` 写入 localStorage；文件为空时，`fetchStrings(Region.System, id)` 只能返回 `?`。
+- 原解析逻辑使用 `line.split(" ", 3)`，即使以后补入真实 `strings.conf`，带空格的提示文本也会被截断。
+
+修复：
+
+- `neos-client/src/api/strings.ts`
+  - 加载 `strings.conf` 时检查 HTTP 状态，失败时给出 console warning。
+  - 改用正则解析前三段，保留第三列之后的完整提示文本。
+  - `fetchStrings()` 把本地缓存中的 `?` 视作缺失。
+  - 增加常用 duel 系统提示中文 fallback，覆盖阶段、等待、效果选择、区域/属性/种族/类型、常见错误和胜利原因。
+  - 对未知编号返回 `系统提示 <id>`，避免继续显示裸 `?`。
+
+验证：
+
+```bash
+cd neos-client
+npx eslint src/api/strings.ts
+npm run build
+```
+
+隔离端口验证：
+
+- `PORT=3132 YGOPRO_PROXY_PORT=7912 ./start.sh` 可启动。
+- `curl -I http://localhost:3132/neos/` 返回 200。
+- `curl http://localhost:3132/api/cubes` 正常。
+- 构建后的 bundle 内可以检索到 `等待对方操作`、`抽卡阶段`、`请选择要发动的效果` 等 fallback 文本。
