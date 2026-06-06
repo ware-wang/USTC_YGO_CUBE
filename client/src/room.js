@@ -62,6 +62,9 @@ function cardImgUrl(id) { return CARD_IMG_BASE + id + '.jpg'; }
 
 /* ======================== CARD UTILS ======================== */
 function isExtraType(t) { return t & (T_FUSION|T_SYNCHRO|T_XYZ|T_LINK); }
+function isMonsterType(t) { return (t & T_MONSTER) !== 0; }
+function isSpellType(t) { return (t & T_SPELL) !== 0; }
+function isTrapType(t) { return (t & T_TRAP) !== 0; }
 function typeName(t) {
   if (t&T_LINK) return '链接'; if (t&T_XYZ) return '超量';
   if (t&T_SYNCHRO) return '同调'; if (t&T_FUSION) return '融合';
@@ -114,6 +117,20 @@ function makeCardEl(card, opts) {
   div.dataset.id = card.id;
   if (Number.isInteger(card.packSlot)) div.dataset.packSlot = String(card.packSlot);
   div.innerHTML = cardHTML(card, opts.small);
+
+  if (opts.detailButton) {
+    const detailBtn = document.createElement('button');
+    detailBtn.type = 'button';
+    detailBtn.className = 'card-detail-chip';
+    detailBtn.title = '查看详情';
+    detailBtn.setAttribute('aria-label', '查看详情');
+    detailBtn.textContent = 'i';
+    detailBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showCardDetail(card, opts.detailSource || 'pool');
+    });
+    div.appendChild(detailBtn);
+  }
 
   if (opts.draggable) {
     div.draggable = true;
@@ -563,10 +580,10 @@ function renderPack() {
   }
 
   for (const card of cards) {
-    const cardEl = makeCardEl(card);
+    const cardEl = makeCardEl(card, { detailButton: true, detailSource: 'draft' });
     cardEl.addEventListener('click', () => {
       if (state.draft.phase !== 'choosing') return;
-      showCardDetail(card, 'draft');
+      handleSelectCard(card, cardEl);
     });
     area.appendChild(cardEl);
   }
@@ -579,13 +596,21 @@ function setDraftPickedCards(cards) {
 }
 
 function renderDraftPickedCards() {
-  const main = state.draft.pickedCards.filter(card => !isExtraType(card.type || 0));
-  const extra = state.draft.pickedCards.filter(card => isExtraType(card.type || 0));
+  const sorted = sortDraftPickedCards(state.draft.pickedCards);
+  const main = sorted.filter(card => !isExtraType(card.type || 0));
+  const extra = sorted.filter(card => isExtraType(card.type || 0));
+  const monsters = main.filter(card => isMonsterType(card.type || 0));
+  const spells = main.filter(card => isSpellType(card.type || 0));
+  const traps = main.filter(card => isTrapType(card.type || 0));
 
   setText('draftPickedTotal', state.draft.pickedCards.length + ' 张');
-  setText('draftPickedMainCount', '(' + main.length + ')');
+  setText('draftPickedMonsterCount', '(' + monsters.length + ')');
+  setText('draftPickedSpellCount', '(' + spells.length + ')');
+  setText('draftPickedTrapCount', '(' + traps.length + ')');
   setText('draftPickedExtraCount', '(' + extra.length + ')');
-  renderDraftPickedZone('draftPickedMain', main, '尚未选择主卡');
+  renderDraftPickedZone('draftPickedMonster', monsters, '尚未选择主卡怪兽');
+  renderDraftPickedZone('draftPickedSpell', spells, '尚未选择魔法');
+  renderDraftPickedZone('draftPickedTrap', traps, '尚未选择陷阱');
   renderDraftPickedZone('draftPickedExtra', extra, '尚未选择额外');
 }
 
@@ -603,10 +628,46 @@ function renderDraftPickedZone(zoneId, cards, emptyText) {
   }
 
   for (const card of cards) {
-    const cel = makeCardEl(card, { small: true });
+    const cel = makeDraftPickedThumb(card);
     cel.addEventListener('click', () => showCardDetail(card, 'pool'));
     zone.appendChild(cel);
   }
+}
+
+function makeDraftPickedThumb(card) {
+  const div = document.createElement('button');
+  div.type = 'button';
+  div.className = 'draft-picked-thumb';
+  div.dataset.id = card.id;
+  div.title = (card.name || String(card.id)) + ' / ' + typeName(card.type || 0);
+  div.innerHTML =
+    '<img src="' + cardImgUrl(card.id) + '" alt="' + h(card.name || '') + '" loading="lazy"' +
+    ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">' +
+    '<span class="draft-picked-no-img" style="display:none">无卡图</span>';
+  return div;
+}
+
+function sortDraftPickedCards(cards) {
+  return [...cards].sort((a, b) => {
+    const groupDiff = draftPickedGroupOrder(a) - draftPickedGroupOrder(b);
+    if (groupDiff) return groupDiff;
+
+    const extraDiff = Number(isExtraType(a.type || 0)) - Number(isExtraType(b.type || 0));
+    if (extraDiff) return extraDiff;
+
+    const levelDiff = (b.level || 0) - (a.level || 0);
+    if (levelDiff) return levelDiff;
+
+    return String(a.name || a.id).localeCompare(String(b.name || b.id), 'zh-Hans-CN');
+  });
+}
+
+function draftPickedGroupOrder(card) {
+  const t = card.type || 0;
+  if (isMonsterType(t)) return 0;
+  if (isSpellType(t)) return 1;
+  if (isTrapType(t)) return 2;
+  return 3;
 }
 
 function handleSelectCard(card, cardEl) {
