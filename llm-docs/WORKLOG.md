@@ -653,3 +653,66 @@ sed 's|localhost:3131|localhost:3132|' test-ygopro-ws.js | node --input-type=mod
 - 只从存在 Lua 脚本的轮抽池主卡里抽 40 张。
 - 服务端启动 neos 前也做脚本数量预检，避免缺脚本卡继续流入 neos 并显示误导性的版本错误。
 - 对战桌双方 ready 后禁止重复提交，`launchNeosDuel()` 只在首次 ready 时触发。
+
+### 修复通常怪兽脚本误判、效果文案、额外卡组确认与选择状态残留
+
+用户反馈：
+
+- 无效果通常怪兽没有 Lua 脚本是正常情况，不应被当成非法卡。
+- 部分效果发动/选项弹窗全是 `?`。
+- 自己额外卡组无法随时确认，准备从额外特殊召唤时也看不到将要召唤哪张。
+- 盖放怪兽看起来能被当成 Link 素材。
+
+根因：
+
+1. `/api/cards/script-status`、`validateNeosDeckScripts()` 和 `DuelSession` 都把 “没有 `c{id}.lua`” 直接等同于“不能装载”，误伤了 `TYPE_NORMAL` 且无效果的主卡组通常怪兽。
+2. neos 前端部分路径直接用 `fetchStrings(System, effect_description)`，没有处理 `cardId << 4 | index` 这种卡片效果描述编码。
+3. `MSG_START` 只创建额外卡组占位卡，当前桥接层没有给本人补发 EXTRA 区域的真实卡号更新。
+4. `selectUnselectCard` 等选择消息没有先清掉上一轮场上选卡状态，点击已选择/可选卡发送 response 后还会继续打开详情/菜单，容易表现成旧 response 残留。
+
+修复：
+
+- 新增 `server/src/duel-bridge/card-script-status.js`，用 `cards.cdb` 类型 + Lua 脚本共同判断可装载性：
+  - 主卡组无效果通常怪兽可无脚本。
+  - 效果怪兽、魔法、陷阱、额外卡组怪兽仍要求脚本。
+  - 不在 `cards.cdb` 的卡一律不可装载。
+- `/api/cards/script-status` 返回 `results[id]=loadable`，并附带 `details`，方便前端和排障区分 `hasScript/scriptRequired/loadable`。
+- `DuelSession` 不再“过滤缺脚本卡后继续开局”，而是对不可装载卡直接报明确错误；可装载通常怪兽会正常进入主卡组。
+- testMode 快速组卡改成按 `loadable` 抽卡，不再把通常怪兽当缺脚本卡排除。
+- `client/src/room.html` 的 `room.js` 版本号升到 `v=7`，避免浏览器继续缓存旧的快速组卡逻辑。
+- neos 前端统一新增 `getEffectDescription()`，效果确认、效果选项、选择弹窗效果描述都走 `getStrings()` 解析卡片描述编码。
+- `ygopro-ws.js` 在 `MSG_START` 后给每个玩家单独发送一条本人 EXTRA 区 `MSG_UPDATE_DATA`，只同步自己的额外卡组真实卡号。
+- `selectIdleCmd` 在收到带 `card_info.code` 的可操作项时，只在当前玩家可见的情况下补齐本地卡号/元数据。
+- 自己 EXTRA 背景区点击可打开卡组列表；对手 EXTRA 仍隐藏。
+- `clearSelectInfo()` 改为清全场选卡状态，并在 `selectCard/selectSum/selectTribute/selectUnselectCard/wait` 开头调用。
+- 场上卡被选中后发送 response 会立即清状态并返回，不再继续打开详情或下拉菜单。
+
+验证：
+
+```bash
+node --check server/src/duel-bridge/card-script-status.js
+node --check server/src/duel-bridge/duel-session.js
+node --check server/src/duel-bridge/ygopro-ws.js
+node --check server/src/ws/index.js
+node --check server/src/index.js
+```
+
+```bash
+cd neos-client
+npx eslint src/api/strings.ts src/service/duel/selectCard.ts src/service/duel/selectEffectYn.ts src/service/duel/selectIdleCmd.ts src/service/duel/selectSum.ts src/service/duel/selectTribute.ts src/service/duel/selectUnselectCard.ts src/service/duel/wait.ts src/service/utils/fetchCheckCardMeta.ts src/ui/Duel/Message/OptionModal/index.tsx src/ui/Duel/PlayMat/Bg/index.tsx src/ui/Duel/PlayMat/Card/index.tsx src/ui/Duel/utils/clearSelectInfo.ts
+npm run build
+```
+
+功能验证：
+
+- `14575467` 返回 `existsInDb=true, hasScript=false, scriptRequired=false, loadable=true`。
+- 由 `14575467 + 39` 张有脚本主卡组成的 40 张主卡组可以创建 `DuelSession`，双方装载后均为 `main=40`。
+- 隔离端口 `PORT=3132 YGOPRO_PROXY_PORT=7912 ./start.sh` 可启动。
+- `curl http://localhost:3132/api/cubes` 正常。
+- `POST /api/cards/script-status` 对 `14575467/71413901` 返回 `loadable=true`。
+- `server/test-ygopro-ws.js` 经端口替换后可完成 join / ready / duel start，并收到 `MSG_START` 与后续对局消息。
+
+注意：
+
+- `npm run lint` 全量仍会失败，原因是 neos-client 中已有多个未触碰文件存在 Prettier 旧问题；本次改动文件的定向 lint 已通过。
+- 这台环境没有安装 Playwright Chromium，因此没有做真实浏览器截图级验证；已用 Vite 构建、HTTP 健康检查和协议联调覆盖主要回归面。

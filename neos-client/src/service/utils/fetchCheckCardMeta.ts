@@ -1,5 +1,5 @@
 import type { ygopro } from "@/api";
-import { fetchCard, getCardStr } from "@/api/cards";
+import { fetchCard, getEffectDescription } from "@/api";
 import { Context } from "@/container";
 import { isCardDisabled } from "@/stores";
 import type { Option } from "@/ui/Duel/Message";
@@ -53,7 +53,7 @@ const helper = async (
     newID === 0 && target ? getVisibleCardMeta(target) : fetchCard(newID);
 
   const effectDesc = effect_description
-    ? getCardStr(meta, effect_description & 0xf)
+    ? getEffectDescription(effect_description, undefined)
     : undefined;
   const newOption: Option = {
     meta,

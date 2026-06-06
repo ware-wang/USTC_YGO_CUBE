@@ -10,6 +10,7 @@ import { DuelManager } from './duel-manager/index.js';
 import { duelBridge } from './duel-bridge/index.js';
 import { createWSServer } from './ws/index.js';
 import { registerPreloadedDecks } from './duel-bridge/ygopro-ws.js';
+import { getCardScriptStatus } from './duel-bridge/card-script-status.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.join(__dirname, '..', '..', 'client', 'src');
@@ -123,12 +124,15 @@ async function main() {
     if (!YGO_SCRIPT_PATH) return res.status(500).json({ error: 'YGO_SCRIPT_PATH 未配置，无法检查卡片脚本' });
 
     const results = {};
+    const details = {};
     for (const rawId of ids) {
       const id = parseInt(rawId, 10);
       if (!Number.isFinite(id) || id <= 0) continue;
-      results[id] = existsSync(path.join(YGO_SCRIPT_PATH, `c${id}.lua`));
+      const status = getCardScriptStatus(id, YGO_SCRIPT_PATH);
+      results[id] = status.loadable;
+      details[id] = status;
     }
-    res.json({ results });
+    res.json({ results, details });
   });
 
   // Get cube details

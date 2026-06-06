@@ -1,6 +1,7 @@
 import { ygopro } from "@/api";
 import { Container } from "@/container";
 import { displaySelectActionsModal } from "@/ui/Duel/Message/SelectActionsModal";
+import { clearSelectInfo } from "@/ui/Duel/utils";
 
 import { fetchCheckCardMeta } from "../utils";
 import { isAllOnField } from "./util";
@@ -13,6 +14,7 @@ export default async (
   const context = container.context;
   const cardStore = context.cardStore;
   const matStore = context.matStore;
+  clearSelectInfo();
   const {
     finishable,
     cancelable,

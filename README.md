@@ -15,7 +15,7 @@
 ### 在线对战 (neos-ts)
 - **浏览器内实时对战** — 无需安装 ygopro 客户端，打开浏览器即可对战
 - **ocgcore WASM 引擎** — 基于 koishipro-core.js 的完整规则引擎
-- **原汁原味的游戏王规则** — 支持所有卡牌效果（需 Lua 脚本）、连锁处理、召唤/魔法/陷阱
+- **原汁原味的游戏王规则** — 支持 Lua 脚本卡牌效果、无效果通常怪兽、连锁处理、召唤/魔法/陷阱
 - **图形化对战界面** — 卡牌渲染、场地展示、操作菜单
 
 ## 快速开始
@@ -57,7 +57,7 @@ cp -r /path/to/ygopro/script ./ygopro/
 ```
 
 > `cards.cdb` 和 Lua 脚本可从 [ygopro 项目](https://github.com/Fluorohydride/ygopro) 获取。
-> 如果主卡组缺少 Lua 脚本，DuelSession 会在过滤后校验可装载主卡数量；不足 40 张会拒绝开局并在 server 日志中给出缺脚本卡号。
+> 无效果通常怪兽本来可以没有 `c{id}.lua`，只要 `cards.cdb` 中编号正确即可装载；效果怪兽、魔法、陷阱和额外卡组怪兽仍需要对应 Lua 脚本。服务端会在开局前拒绝无法装载的卡，而不是进入 neos 后才显示“版本不匹配”。
 
 ### 使用 Node 20（重要）
 
@@ -172,8 +172,8 @@ PORT=8080 npm start
 - 只从该玩家本次轮抽得到的卡池中抽卡。
 - 主卡组只使用非额外卡组类型，随机抽 40 张。
 - 额外卡组只使用融合/同调/超量/连接卡，最多 15 张。
-- 生成前会调用 `/api/cards/script-status` 检查 Lua 脚本，只选择可被 DuelSession 装载的卡。
-- 如果轮抽池里有 Lua 脚本的主卡不足 40 张，会在轮抽页面直接报错，不会进入 neos 后再显示“版本不匹配”。
+- 生成前会调用 `/api/cards/script-status` 检查卡片可装载性；无效果通常怪兽允许没有 Lua 脚本。
+- 如果轮抽池里可装载主卡不足 40 张，会在轮抽页面直接报错，不会进入 neos 后再显示“版本不匹配”。
 - 服务端会再次校验卡组张数、主/额外类型，以及 testMode 卡组是否来自玩家轮抽池。
 
 ### 对战界面功能
@@ -212,6 +212,7 @@ cube-draft/
 │   │   ├── duel-bridge/       # ⭐ 对战协议桥接层
 │   │   │   ├── duel-session.js    # ocgcore WASM 对战会话
 │   │   │   ├── protocol-adapter.js# ygopro 二进制协议编解码
+│   │   │   ├── card-script-status.js # cards.cdb + Lua 脚本装载判定
 │   │   │   ├── ygopro-ws.js       # 二进制 WS 端点 + 房间配对
 │   │   │   ├── ygopro-proxy.js    # 7911 端口转发代理
 │   │   │   ├── ocgcore-worker.mjs # WASM 引擎 Worker

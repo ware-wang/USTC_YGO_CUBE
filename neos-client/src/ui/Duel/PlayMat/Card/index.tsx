@@ -12,7 +12,7 @@ import {
 } from "@/api";
 import {
   fetchStrings,
-  getCardStr,
+  getEffectDescription,
   sendSelectIdleCmdResponse,
   ygopro,
 } from "@/api";
@@ -287,8 +287,10 @@ export const Card: React.FC<{ idx: number }> = React.memo(({ idx }) => {
         if (selectInfo.response !== undefined) {
           sendSelectMultiResponse(container.conn, [selectInfo.response]);
           clearSelectInfo();
+          return;
         } else {
           console.error("card is selectable but the response is undefined!");
+          return;
         }
       }
 
@@ -467,8 +469,8 @@ const handleEffectActivation = (
     const options = effectInteractivies.map((effect) => {
       const effectMsg =
         meta && effect.effectCode
-          ? getCardStr(meta, effect.effectCode & 0xf) ?? "[:?]"
-          : "[:?]";
+          ? getEffectDescription(effect.effectCode, effect.desc || "发动效果")
+          : effect.desc || "发动效果";
       return {
         info: effectMsg,
         response: effect.response,

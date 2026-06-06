@@ -65,3 +65,16 @@ export function getStrings(description: number): string {
     return getCardStr(fetchCard(code), index) ?? "[?]";
   }
 }
+
+export function isMissingString(text?: string): boolean {
+  return !text || text === "?" || text === "[?]" || text === "[:?]";
+}
+
+export function getEffectDescription(
+  description?: number,
+  fallback = "发动效果",
+): string {
+  if (!description) return fallback;
+  const text = getStrings(description);
+  return isMissingString(text) ? fallback : text;
+}

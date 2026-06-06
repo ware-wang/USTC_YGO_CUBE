@@ -1,8 +1,10 @@
-import { ygopro } from "@/api";
+import { fetchCard, ygopro } from "@/api";
 import { type Interactivity, InteractType } from "@/stores";
 
 import MsgSelectIdleCmd = ygopro.StocGameMessage.MsgSelectIdleCmd;
 import { Container } from "@/container";
+
+import { isCardVisibleToCurrentPlayer } from "../utils/cardVisibility";
 
 export default async (
   container: Container,
@@ -22,7 +24,7 @@ export default async (
     const interactType = idleTypeToInteractType(cmd.idle_type);
 
     cmd.idle_datas.forEach((data) => {
-      const { location, sequence } = data.card_info;
+      const { code, location, sequence } = data.card_info;
 
       // valtio: 代码从 ./selectBattleCmd.ts 复制过来的
       if (interactType) {
@@ -34,6 +36,10 @@ export default async (
         const tmp = map[interactType];
         const target = context.cardStore.at(location, player, sequence);
         if (target) {
+          if (code > 0 && isCardVisibleToCurrentPlayer(target)) {
+            target.code = code;
+            target.meta = fetchCard(code);
+          }
           target.idleInteractivities.push({
             ...tmp,
             interactType,

@@ -16,8 +16,7 @@
 
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { getCardScriptStatus } from './card-script-status.js';
 
 // Force CJS version (Node.js fetch doesn't support file:// for WASM loading)
 const require = createRequire(import.meta.url);
@@ -101,20 +100,17 @@ export class DuelSession extends EventEmitter {
 
       console.log(`[DuelSession] Player ${player} raw deck: main=${deck.main?.length || 0}, extra=${deck.extra?.length || 0}`);
 
-      // Filter cards without Lua scripts (prevents WASM crash)
-      const missingMainScripts = [];
-      const main = [...deck.main].filter(code => {
-        const hasScript = existsSync(join(this.scriptPath, `c${code}.lua`));
-        if (!hasScript) missingMainScripts.push(code);
-        return hasScript;
-      });
+      const mainStatuses = [...deck.main].map((code) => getCardScriptStatus(code, this.scriptPath));
+      const unusableMain = mainStatuses.filter((status) => !status.loadable);
+      if (unusableMain.length > 0) {
+        throw new Error(`Player ${player} has ${unusableMain.length} unloadable main-deck cards: ${formatCardStatusList(unusableMain)}`);
+      }
+
+      const main = [...deck.main].filter((_, index) => mainStatuses[index]?.loadable);
       shuffleInPlace(main, makePlayerShuffleSeed(this.seed, player));
 
-      if (missingMainScripts.length > 0) {
-        console.warn(`[DuelSession] Skipping ${missingMainScripts.length} main-deck cards without scripts: ${missingMainScripts.slice(0, 10).join(',')}${missingMainScripts.length > 10 ? '...' : ''}`);
-      }
       if (main.length < 40 || main.length > 60) {
-        throw new Error(`Player ${player} has ${main.length} usable main-deck cards after script filter; expected 40-60`);
+        throw new Error(`Player ${player} has ${main.length} usable main-deck cards after validation; expected 40-60`);
       }
       for (const code of [...main].reverse()) {
         this.#duel.newCard({
@@ -125,17 +121,15 @@ export class DuelSession extends EventEmitter {
         });
       }
 
-      const missingExtraScripts = [];
-      const extra = [...deck.extra].filter(code => {
-        const hasScript = existsSync(join(this.scriptPath, `c${code}.lua`));
-        if (!hasScript) missingExtraScripts.push(code);
-        return hasScript;
-      });
-      if (missingExtraScripts.length > 0) {
-        console.warn(`[DuelSession] Skipping ${missingExtraScripts.length} extra-deck cards without scripts: ${missingExtraScripts.slice(0, 10).join(',')}${missingExtraScripts.length > 10 ? '...' : ''}`);
+      const extraStatuses = [...deck.extra].map((code) => getCardScriptStatus(code, this.scriptPath));
+      const unusableExtra = extraStatuses.filter((status) => !status.loadable);
+      if (unusableExtra.length > 0) {
+        throw new Error(`Player ${player} has ${unusableExtra.length} unloadable extra-deck cards: ${formatCardStatusList(unusableExtra)}`);
       }
+
+      const extra = [...deck.extra].filter((_, index) => extraStatuses[index]?.loadable);
       if (extra.length > 15) {
-        throw new Error(`Player ${player} has ${extra.length} usable extra-deck cards after script filter; expected <=15`);
+        throw new Error(`Player ${player} has ${extra.length} usable extra-deck cards after validation; expected <=15`);
       }
       for (const code of [...extra].reverse()) {
         this.#duel.newCard({
@@ -150,7 +144,7 @@ export class DuelSession extends EventEmitter {
         main: [...main],
         extra: [...extra],
       };
-      console.log(`[DuelSession] Player ${player} loaded deck after script filter: main=${this.loadedDecks[player].main.length}, extra=${this.loadedDecks[player].extra.length}, testMode=${this.testMode}`);
+      console.log(`[DuelSession] Player ${player} loaded deck after validation: main=${this.loadedDecks[player].main.length}, extra=${this.loadedDecks[player].extra.length}, testMode=${this.testMode}`);
     }
 
     // Calculate and apply duel options. Keep this aligned with srvpro2:
@@ -406,6 +400,13 @@ function buildPlayerPayloads(msg, responsePlayer) {
 function makePlayerShuffleSeed(seed, player) {
   const numericSeed = Number.isFinite(Number(seed)) ? Number(seed) : Date.now();
   return ((numericSeed >>> 0) ^ Math.imul(player + 1, 0x9e3779b9)) >>> 0;
+}
+
+function formatCardStatusList(statuses) {
+  return statuses
+    .slice(0, 10)
+    .map((status) => `${status.name || status.id}(${status.id})`)
+    .join(', ');
 }
 
 function shuffleInPlace(cards, seed) {

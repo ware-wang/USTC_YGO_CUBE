@@ -159,7 +159,7 @@ lsof -iTCP:7911 -sTCP:LISTEN -n -P
 如果是：
 
 - 先不要把问题归因到 `/duel` 页面按钮
-- 更可能是预加载进对局的牌组本身不合法、过小，或被过滤脚本后几乎为空
+- 更可能是预加载进对局的牌组本身不合法、过小，或含有不可装载卡
 
 检查：
 
@@ -171,35 +171,51 @@ lsof -iTCP:7911 -sTCP:LISTEN -n -P
 testMode 下建议：
 
 - 优先点 `测试模式：从轮抽池随机组卡并提交`
-- 该按钮会先调用 `/api/cards/script-status` 检查 Lua 脚本
+- 该按钮会先调用 `/api/cards/script-status` 检查卡片可装载性
 - 然后只从玩家本次轮抽得到且可被 DuelSession 装载的卡里随机抽 40 张主卡组卡，并抽最多 15 张额外卡
-- 如果轮抽池里可放入主卡组的卡少于 40 张，或有脚本的主卡少于 40 张，页面会直接报“数量不够”
+- 如果轮抽池里可放入主卡组的卡少于 40 张，或可装载主卡少于 40 张，页面会直接报“数量不够”
 
 额外检查：
 
 - 看 server 日志中的：
   - `Player X raw deck: main=...`
-  - `Player X loaded deck after script filter: main=..., extra=..., testMode=...`
+  - `Player X loaded deck after validation: main=..., extra=..., testMode=...`
 
-如果 `raw deck` 是 40，但 `loaded deck after script filter` 很小：
+如果 `raw deck` 是 40，但开局前报 `unloadable ... cards`：
 
-- 说明卡被 Lua 脚本过滤掉了
+- 说明卡不满足装载条件
 - 当前版本不会再用固定调试卡组自动补足
-- 优先检查本地 `ygopro/script/` 是否完整，或换一个包含足够可装载卡的 cube
+- 普通无效果通常怪兽允许没有 Lua 脚本；效果怪兽、魔法、陷阱、额外卡组怪兽缺脚本仍会被拒绝
+- 优先检查本地 `cards.cdb` 与 `ygopro/script/` 是否匹配，或换一个包含足够可装载卡的 cube
 
 ### 7.3.3 testMode 快速卡组规则
 
 当前规则：
 
 - 浏览器端不再使用固定测试卡组。
-- 快速提交会从玩家轮抽池随机抽 40 张可进主卡组且存在 Lua 脚本的卡。
-- 额外卡组从玩家轮抽池里存在 Lua 脚本的融合/同调/超量/连接卡随机抽取，最多 15 张。
+- 快速提交会从玩家轮抽池随机抽 40 张可进主卡组且可装载的卡。
+- 无效果通常怪兽不需要 Lua 脚本，只要编号存在于 `cards.cdb` 即可参与随机组卡。
+- 额外卡组从玩家轮抽池里可装载的融合/同调/超量/连接卡随机抽取，最多 15 张。
 - 副卡组留空。
 - 服务端会重新校验张数、主/额外类型，以及 testMode 卡组是否是玩家轮抽池的子集。
-- 服务端在注册 neos 预装房间前还会检查主卡组脚本数量，避免进入 neos 后才显示误导性的“版本不匹配”。
+- 服务端在注册 neos 预装房间前还会检查卡片可装载性，避免进入 neos 后才显示误导性的“版本不匹配”。
 - DuelSession 开局前会对每个玩家的主卡组使用不同 seed 洗牌，避免双方提交相同列表时抽牌顺序也相同。
 
-### 7.3.4 已进入 `主要阶段 1`，但仍然像“不能操作”
+### 7.3.4 对战内卡片可见性与选择状态
+
+规则口径：
+
+- 自己的额外卡组可以随时确认；对手的额外卡组在盖放状态下仍应隐藏。
+- 对手盖放怪兽/盖卡只在规则允许公开时显示真实信息，例如反转、伤害判定或效果确认。
+- 新的素材/对象选择消息到达时，前端必须清掉上一轮选择状态，避免旧 response 残留导致看起来能选择非法素材。
+
+排查重点：
+
+- 自己额外卡组不显示时，看 `ygopro-ws.js` 是否在 `MSG_START` 后给本人发送了 `MSG_UPDATE_DATA` 的 EXTRA 区私有更新。
+- 效果发动选项显示 `?` 时，看前端是否使用 `getEffectDescription()` / `getStrings()` 解析 `effect_description`，而不是直接按系统字符串编号读取。
+- 盖放怪兽疑似能作为 Link 素材时，先看 DOM 上旧的 `data-card-selectable` 是否没有被清掉；如果清理后仍可选，再继续查 ocgcore 返回的候选列表或对应 Lua 过程。
+
+### 7.3.5 已进入 `主要阶段 1`，但仍然像“不能操作”
 
 这说明：
 
@@ -224,7 +240,7 @@ testMode 下建议：
 - `MSG_HINT`
 - 以及 `ygopro-msg-encode` 重编码后的 payload 是否与 neos-ts 期望完全一致
 
-### 7.3.5 效果处理后连锁标志残留 / 无法回到自由时点
+### 7.3.6 效果处理后连锁标志残留 / 无法回到自由时点
 
 典型复现场景：
 
@@ -253,7 +269,7 @@ testMode 下建议：
 - 阶段控件 `duel-phase-select` 应恢复可用
 - `chainEnd.ts` 会兜底清空所有位置的 `chainIndex`
 
-### 7.3.6 选择目标时能看到对手盖卡
+### 7.3.7 选择目标时能看到对手盖卡
 
 这类问题优先按“后端视角裁剪 + 前端展示保护”两层查。
 
@@ -281,7 +297,7 @@ testMode 下建议：
 - `neos-client/src/ui/Duel/Message/SelectCardsModal/index.tsx`
 - `neos-client/src/ui/Duel/PlayMat/Card/index.tsx`
 
-### 7.3.7 选择目标弹窗按钮显示 `?`
+### 7.3.8 选择目标弹窗按钮显示 `?`
 
 优先检查 `SelectCardsModal`：
 
@@ -291,12 +307,25 @@ testMode 下建议：
   - `Menu.SelectionComplete`
 - 如果仍然显示 `?`，先看 `neos-client/src/ui/I18N/Source/*/translation.json` 中对应 key 是否存在。
 
-### 7.4 某些卡在日志中被跳过
+### 7.4 某些卡开局前报无法装载
 
-这通常是缺 Lua 脚本。先看：
+通常先分两类看：
+
+- 无效果通常怪兽：可以没有 Lua 脚本，只要 `cards.cdb` 里存在该编号。
+- 其他卡：效果怪兽、魔法、陷阱、额外卡组怪兽通常需要 `c{id}.lua`。
+
+先看：
 
 ```bash
 find ../ygopro/script -maxdepth 1 -type f | head
+```
+
+再用接口确认：
+
+```bash
+curl -sS -H 'Content-Type: application/json' \
+  -d '{"ids":[14575467,71413901]}' \
+  http://localhost:3131/api/cards/script-status
 ```
 
 ## 8. 回归清单
@@ -311,6 +340,9 @@ find ../ygopro/script -maxdepth 1 -type f | head
 - [ ] duel 内 `CTOS_CHAT` 能回显为 `STOC_CHAT`
 - [ ] 对手盖卡在棋盘、选择弹窗、列表抽屉中 `data-card-code=0`
 - [ ] 点击对手盖卡不会打开卡片详情抽屉
+- [ ] 自己额外卡组点击可打开并显示真实卡名/卡图，对手额外仍隐藏
+- [ ] 多效果发动选项和 `SELECT_EFFECTYN` 不显示 `?`
+- [ ] 新的选择消息到达后旧 `data-card-selectable` 会被清掉
 - [ ] 选择目标弹窗按钮不显示 `?`
 - [ ] `POST /api/launch-duel` 返回 `/neos/duelroom`
 - [ ] DuelRoom 默认地址仍是 `<hostname>:7911`

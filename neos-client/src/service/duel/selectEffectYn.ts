@@ -1,4 +1,4 @@
-import { fetchStrings, Region, type ygopro } from "@/api";
+import { fetchStrings, getEffectDescription, Region, type ygopro } from "@/api";
 import { CardMeta, fetchCard } from "@/api/cards";
 import { displayYesNoModal } from "@/ui/Duel/Message";
 
@@ -31,10 +31,15 @@ export default async (selectEffectYn: MsgSelectEffectYn) => {
 
   // TODO: 国际化文案
 
-  const desc = fetchStrings(
-    Region.System,
-    effect_description === 0 ? 200 : effect_description,
-  );
   const meta = fetchCard(code);
+  const fallback = meta.text.name
+    ? `是否发动「${meta.text.name}」的效果？`
+    : "是否发动效果？";
+  const desc =
+    effect_description === 0
+      ? fetchStrings(Region.System, 200)
+      : effect_description === 221
+      ? fetchStrings(Region.System, 221)
+      : getEffectDescription(effect_description, fallback);
   await displayYesNoModal(textGenerator(desc, meta, location));
 };

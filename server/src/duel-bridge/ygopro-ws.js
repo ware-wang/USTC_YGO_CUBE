@@ -22,6 +22,11 @@ import {
 } from './protocol-adapter.js';
 
 const MSG_START = 0x04;
+const MSG_UPDATE_DATA = 0x06;
+const LOCATION_EXTRA = 0x40;
+const POS_FACEDOWN = 0x0a;
+const QUERY_CODE = 0x01;
+const QUERY_POSITION = 0x02;
 
 // ── Room management ───────────────────────────
 
@@ -426,6 +431,7 @@ async function startDuel(room) {
       if (!p?.ws) continue;
       p.ws.send(buildStocDuelStart());
       p.ws.send(buildStocGameMsg(buildMsgStartPayload(i, deckSizes, room)));
+      p.ws.send(buildStocGameMsg(buildExtraDeckUpdatePayload(i, session.loadedDecks[i]?.extra || [])));
     }
 
     // Hook up events for relay
@@ -562,6 +568,27 @@ function buildMsgStartPayload(playerIndex, deckSizes, room) {
   buf.writeInt16LE(opDeck.extra, offset); offset += 2;
 
   return Buffer.concat([Buffer.from([MSG_START]), buf]);
+}
+
+function buildExtraDeckUpdatePayload(playerIndex, extraCodes) {
+  const chunks = extraCodes.map((code, sequence) => {
+    const actionDataLength = 12; // flags + code + card location
+    const chunk = Buffer.alloc(4 + actionDataLength);
+    let offset = 0;
+    chunk.writeInt32LE(4 + actionDataLength, offset); offset += 4;
+    chunk.writeInt32LE(QUERY_CODE | QUERY_POSITION, offset); offset += 4;
+    chunk.writeInt32LE(code, offset); offset += 4;
+    chunk.writeUInt8(playerIndex & 0xff, offset++);
+    chunk.writeUInt8(LOCATION_EXTRA, offset++);
+    chunk.writeUInt8(sequence & 0xff, offset++);
+    chunk.writeUInt8(POS_FACEDOWN, offset++);
+    return chunk;
+  });
+
+  return Buffer.concat([
+    Buffer.from([MSG_UPDATE_DATA, playerIndex & 0xff, LOCATION_EXTRA]),
+    ...chunks,
+  ]);
 }
 
 // ── Cleanup timer ────────────────────────────

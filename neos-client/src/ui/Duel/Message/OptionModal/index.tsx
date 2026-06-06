@@ -7,7 +7,7 @@ import { proxy, useSnapshot } from "valtio";
 import {
   type CardMeta,
   fetchStrings,
-  getCardStr,
+  getEffectDescription,
   Region,
   sendSelectIdleCmdResponse,
   sendSelectOptionResponse,
@@ -169,8 +169,8 @@ export const handleEffectActivation = async (
     const options = effectInteractivies.map((effect) => {
       const effectMsg =
         meta && effect.effectCode
-          ? getCardStr(meta, effect.effectCode & 0xf) ?? "[:?]"
-          : "[:?]";
+          ? getEffectDescription(effect.effectCode, effect.desc || "发动效果")
+          : effect.desc || "发动效果";
       return {
         info: effectMsg,
         response: effect.response,

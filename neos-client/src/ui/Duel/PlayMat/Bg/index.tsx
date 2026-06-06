@@ -11,6 +11,7 @@ import {
   type PlaceInteractivity,
   placeStore,
 } from "@/stores";
+import { displayCardListModal } from "@/ui/Duel/Message";
 import { BgChain, type ChainMarker, type ChainProps } from "@/ui/Shared";
 
 import styles from "./index.module.scss";
@@ -239,8 +240,17 @@ const BgOtherBlocks: React.FC<{ op?: boolean }> = ({ op }) => {
         data-zone={ygopro.CardZone[EXTRA]}
         data-zone-value={EXTRA}
         data-controller={controller}
-        data-place-selectable={false}
+        data-place-selectable={!op}
         className={classnames(styles.deck, styles["extra-deck"])}
+        onClick={() => {
+          if (!op) {
+            displayCardListModal({
+              isZone: true,
+              zone: EXTRA,
+              controller,
+            });
+          }
+        }}
         glowing={!op && glowingExtra}
         chains={{
           chains: genChains(extra, EXTRA),

@@ -1,6 +1,7 @@
 import { ygopro } from "@/api";
 import { Container } from "@/container";
 import { displaySelectActionsModal } from "@/ui/Duel/Message/SelectActionsModal";
+import { clearSelectInfo } from "@/ui/Duel/utils";
 
 import { fetchCheckCardMeta } from "../utils";
 type MsgSelectTribute = ygopro.StocGameMessage.MsgSelectTribute;
@@ -9,6 +10,7 @@ export default async (
   container: Container,
   selectTribute: MsgSelectTribute,
 ) => {
+  clearSelectInfo();
   const { selecteds, mustSelects, selectables } = await fetchCheckCardMeta(
     container.context,
     selectTribute.selectable_cards,

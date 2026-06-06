@@ -83,6 +83,7 @@ JSON WebSocket 层，负责：
 - `ygopro-ws.js` — 处理 neos / ygopro 二进制协议
 - `ygopro-proxy.js` — 7911 → `/ws-duel` 代理
 - `duel-session.js` — WASM 对战会话
+- `card-script-status.js` — 按 `cards.cdb` 类型与 Lua 脚本共同判断卡片是否可装载
 - `ocgcore-worker.mjs` — Worker 封装
 - `protocol-adapter.js` — 协议编解码
 

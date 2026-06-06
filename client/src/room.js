@@ -796,25 +796,25 @@ async function buildTestModeYdk() {
     );
   }
 
-  const scriptStatus = await fetchCardScriptStatus([...mainCandidates, ...extraCandidates].map(card => card.id));
-  const scriptedMainCandidates = mainCandidates.filter(card => scriptStatus.get(card.id) === true);
-  const scriptedExtraCandidates = extraCandidates.filter(card => scriptStatus.get(card.id) === true);
+  const cardStatus = await fetchCardScriptStatus([...mainCandidates, ...extraCandidates].map(card => card.id));
+  const loadableMainCandidates = mainCandidates.filter(card => isCardLoadable(cardStatus, card.id));
+  const loadableExtraCandidates = extraCandidates.filter(card => isCardLoadable(cardStatus, card.id));
 
-  if (scriptedMainCandidates.length < 40) {
+  if (loadableMainCandidates.length < 40) {
     const missingMain = mainCandidates
-      .filter(card => scriptStatus.get(card.id) !== true)
+      .filter(card => !isCardLoadable(cardStatus, card.id))
       .slice(0, 8)
       .map(card => card.name ? card.name + '(' + card.id + ')' : String(card.id));
     throw new Error(
-      '轮抽卡池可用于对战的主卡组数量不够：需要至少 40 张有 Lua 脚本的主卡组卡，当前只有 ' +
-      scriptedMainCandidates.length + ' 张。缺脚本主卡示例：' + (missingMain.join('、') || '无') + '。',
+      '轮抽卡池可用于对战的主卡组数量不够：需要至少 40 张可装载主卡，当前只有 ' +
+      loadableMainCandidates.length + ' 张。通常怪兽允许没有 Lua 脚本；无法装载示例：' + (missingMain.join('、') || '无') + '。',
     );
   }
 
-  const mainIds = shuffleCopy(scriptedMainCandidates)
+  const mainIds = shuffleCopy(loadableMainCandidates)
     .slice(0, 40)
     .map(card => card.id);
-  const extraIds = shuffleCopy(scriptedExtraCandidates)
+  const extraIds = shuffleCopy(loadableExtraCandidates)
     .slice(0, 15)
     .map(card => card.id);
 
@@ -837,10 +837,18 @@ async function fetchCardScriptStatus(ids) {
   }
 
   const result = new Map();
-  for (const [id, hasScript] of Object.entries(data.results || {})) {
-    result.set(parseInt(id, 10), hasScript === true);
+  const details = data.details || {};
+  for (const [id, loadable] of Object.entries(data.results || {})) {
+    const parsedId = parseInt(id, 10);
+    result.set(parsedId, details[id] || { loadable: loadable === true });
   }
   return result;
+}
+
+function isCardLoadable(statusMap, id) {
+  const status = statusMap.get(parseInt(id, 10));
+  if (typeof status === 'boolean') return status;
+  return status?.loadable === true;
 }
 
 function getAllDraftedCards() {
@@ -973,7 +981,7 @@ function renderBattleTables() {
         if (ta) {
           if (state.room?.testMode) {
             ta.value = '';
-            ta.placeholder = '点击“测试模式：从轮抽池随机组卡并提交”会先检查 Lua 脚本，再生成可开局测试卡组';
+            ta.placeholder = '点击“测试模式：从轮抽池随机组卡并提交”会先检查卡片可装载性，再生成可开局测试卡组';
           } else {
             ta.value = window._lastYdk || buildYdk();
           }
@@ -1008,7 +1016,7 @@ function renderBattleTables() {
             let generated;
             const originalText = quickBtn.textContent;
             quickBtn.disabled = true;
-            quickBtn.textContent = '正在检查脚本...';
+            quickBtn.textContent = '正在检查卡片...';
             try {
               generated = await buildTestModeYdk();
             } catch (e) {

@@ -8,10 +8,9 @@
 
 import { WebSocketServer } from 'ws';
 import { parse as parseUrl } from 'url';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { DRAFT_STATES } from '../draft/index.js';
 import { handleYgoproConnection } from '../duel-bridge/ygopro-ws.js';
+import { getCardScriptStatus } from '../duel-bridge/card-script-status.js';
 
 /** Map ws → { roomId, playerId, playerName, duelSessionId?, duelPosition? } */
 const clients = new Map();
@@ -400,14 +399,32 @@ function validateNeosDeckScripts(tableDecks) {
   for (let i = 0; i < tableDecks.players.length; i++) {
     const deck = tableDecks.players[i]?.deck;
     const main = deck?.main || [];
-    const missingMain = main.filter((code) => !existsSync(join(scriptPath, `c${code}.lua`)));
-    const usableMain = main.length - missingMain.length;
+    const extra = deck?.extra || [];
+    const mainStatuses = main.map((code) => getCardScriptStatus(code, scriptPath));
+    const extraStatuses = extra.map((code) => getCardScriptStatus(code, scriptPath));
+    const unusableMain = mainStatuses.filter((status) => !status.loadable);
+    const unusableExtra = extraStatuses.filter((status) => !status.loadable);
+    const usableMain = mainStatuses.length - unusableMain.length;
+
+    if (unusableMain.length > 0) {
+      return `玩家${i + 1} 的主卡组有 ${unusableMain.length} 张无法装载的卡。通常怪兽可以没有 Lua 脚本，但效果怪兽、魔法、陷阱等仍需要脚本；示例：${formatCardStatusList(unusableMain)}。`;
+    }
+    if (unusableExtra.length > 0) {
+      return `玩家${i + 1} 的额外卡组有 ${unusableExtra.length} 张无法装载的卡。额外卡组怪兽需要 Lua 脚本；示例：${formatCardStatusList(unusableExtra)}。`;
+    }
     if (usableMain < 40) {
-      return `玩家${i + 1} 的主卡组有 ${missingMain.length} 张缺少 Lua 脚本，过滤后只有 ${usableMain} 张可装载卡，无法开局。请重新点击测试模式随机组卡，或检查 ygopro/script 是否完整。缺脚本示例：${missingMain.slice(0, 8).join(', ')}`;
+      return `玩家${i + 1} 的主卡组只有 ${usableMain} 张可装载卡，无法开局。请重新组卡或检查 cards.cdb / ygopro/script 是否完整。`;
     }
   }
 
   return null;
+}
+
+function formatCardStatusList(statuses) {
+  return statuses
+    .slice(0, 8)
+    .map((status) => `${status.name || status.id}(${status.id})`)
+    .join('、') || '无';
 }
 
 function handleDuelStart(ws, { tableId }) {

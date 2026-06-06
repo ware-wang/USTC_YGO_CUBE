@@ -1,12 +1,14 @@
 import { ygopro } from "@/api";
 import { Container } from "@/container";
 import { displaySelectActionsModal } from "@/ui/Duel/Message/SelectActionsModal";
+import { clearSelectInfo } from "@/ui/Duel/utils";
 
 import { fetchCheckCardMeta } from "../utils";
 type MsgSelectSum = ygopro.StocGameMessage.MsgSelectSum;
 
 export default async (container: Container, selectSum: MsgSelectSum) => {
   const context = container.context;
+  clearSelectInfo();
   const {
     selecteds: selecteds1,
     mustSelects: mustSelect1,

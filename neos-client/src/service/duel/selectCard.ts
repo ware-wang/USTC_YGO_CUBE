@@ -3,6 +3,7 @@ import MsgSelectCard = ygopro.StocGameMessage.MsgSelectCard;
 
 import { Container } from "@/container";
 import { displaySelectActionsModal } from "@/ui/Duel/Message/SelectActionsModal";
+import { clearSelectInfo } from "@/ui/Duel/utils";
 
 import { fetchCheckCardMeta } from "../utils";
 
@@ -10,6 +11,7 @@ export default async (container: Container, selectCard: MsgSelectCard) => {
   const { cancelable, min, max, cards } = selectCard;
   const conn = container.conn;
   const context = container.context;
+  clearSelectInfo();
 
   // TODO: handle release_param
 
