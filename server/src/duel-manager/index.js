@@ -121,6 +121,7 @@ export class DuelManager {
     return {
       id: t.id, roomId: t.roomId, state: t.state,
       winner: t.winner, winnerSeat: t.winnerSeat,
+      duelPassWd: t.duelPassWd,
       startedAt: t.startedAt, finishedAt: t.finishedAt,
       seats: t.seats.map(id => id ? { id } : null),
       mySeat: si >= 0 ? si : -1,
@@ -138,6 +139,7 @@ export class DuelManager {
           seats: t.seats.map(id => id ? { id } : null),
           winner: t.winner,
           winnerSeat: t.winnerSeat,
+          duelPassWd: t.duelPassWd,
           startedAt: t.startedAt,
           finishedAt: t.finishedAt,
         });

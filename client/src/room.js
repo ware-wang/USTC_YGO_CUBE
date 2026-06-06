@@ -236,6 +236,11 @@ function setupHandlers() {
     const url = new URL(window.location);
     url.searchParams.set('roomId', p.room.id);
     url.searchParams.set('name', p.playerName);
+    if (state.roomPassword) {
+      url.searchParams.set('password', state.roomPassword);
+    } else {
+      url.searchParams.delete('password');
+    }
     window.history.replaceState({}, '', url);
   });
 
@@ -1126,6 +1131,17 @@ function renderBattleTables() {
     }
 
     if (mySeat >= 0 && t.state === 'dueling') {
+      const reopenBtn = document.createElement('button');
+      reopenBtn.className = 'btn-primary btn-sm';
+      reopenBtn.style.marginTop = '10px';
+      reopenBtn.textContent = '重新打开对战';
+      reopenBtn.onclick = () => {
+        const passWd = t.duelPassWd || battlePasswdFromTableId(t.id);
+        const duelUrl = `/neos/duelroom?passwd=${encodeURIComponent(passWd)}&player=${encodeURIComponent(state.playerName || 'Player')}`;
+        window.open(duelUrl, '_blank');
+      };
+      card.appendChild(reopenBtn);
+
       const hint = document.createElement('div');
       hint.className = 'bt-hint';
       hint.textContent = '对战中不能离桌，请先在 neos 对战界面结束或投降。';
@@ -1237,6 +1253,10 @@ function clearNeosDuelPrompt() {
   if (prompt) prompt.remove();
   state._pendingDuelUrl = null;
   state._pendingDuelTable = null;
+}
+
+function battlePasswdFromTableId(tableId) {
+  return 'cube_' + String(tableId || '').replace(/\W/g, '').slice(0, 14);
 }
 
 /**
