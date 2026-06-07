@@ -34,6 +34,7 @@ export class RoomManager {
       testMode: testMode === true,
       checkDeckSize: true,
       draft,
+      playerDecks: new Map(),
       state: DRAFT_STATES.IDLE,
       chat: [],  // Array<{name, text, time}>
       created: Date.now(),

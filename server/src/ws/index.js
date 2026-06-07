@@ -98,6 +98,7 @@ function handleMessage(ws, msg, roomManager) {
     case 'confirm_pick': return handleConfirmPick(ws, payload, roomManager);
     case 'get_pack': return handleGetPack(ws, payload, roomManager);
     case 'get_ydk': return handleGetYdk(ws, payload, roomManager);
+    case 'save_deck': return handleSaveDeck(ws, payload, roomManager);
     case 'leave_room': return handleLeave(ws, roomManager);
     case 'swap_seat': return handleSwapSeat(ws, payload, roomManager);
     case 'chat': return handleChat(ws, payload, roomManager);
@@ -440,6 +441,7 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
       type: 'draft_complete',
       payload: {
         pools: room.draft.getPlayerPools(),
+        savedDeck: room.playerDecks?.get(player.id) || null,
         tables,
         resumeView: 'battleLobby',
       },
@@ -500,6 +502,54 @@ function handleGetYdk(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   if (!room) return;
   send(ws, { type: 'ydk', payload: { content: room.draft.generateYdk(client.playerId), playerName: client.playerName, fileName: `${client.playerName}_draft.ydk` } });
+}
+
+function handleSaveDeck(ws, { roomId, deck }, rm) {
+  const client = clients.get(ws);
+  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (roomId && roomId !== client.roomId) {
+    return send(ws, { type: 'error', payload: { message: '房间不匹配，无法保存卡组' } });
+  }
+  const room = rm.getRoom(client.roomId);
+  if (!room) return send(ws, { type: 'error', payload: { message: '房间不存在' } });
+  if (room.state !== DRAFT_STATES.COMPLETE) return;
+
+  const normalized = normalizeSavedDeck(deck, room.draft?.playerPools?.get(client.playerId) || []);
+  if (!normalized) {
+    return send(ws, { type: 'error', payload: { message: '保存卡组失败：卡组内容和轮抽卡池不一致' } });
+  }
+  room.playerDecks ||= new Map();
+  room.playerDecks.set(client.playerId, normalized);
+  room.lastActive = Date.now();
+}
+
+function normalizeSavedDeck(deck, ownedPool) {
+  const sections = ['main', 'extra', 'side', 'pool'];
+  const normalized = {};
+  for (const section of sections) {
+    if (!Array.isArray(deck?.[section])) return null;
+    normalized[section] = deck[section]
+      .map(id => Number(id))
+      .filter(id => Number.isInteger(id) && id > 0);
+  }
+
+  const ownedCounts = countCards(ownedPool);
+  const submittedCounts = countCards(sections.flatMap(section => normalized[section]));
+  if (ownedCounts.size !== submittedCounts.size) return null;
+  for (const [id, count] of ownedCounts) {
+    if (submittedCounts.get(id) !== count) return null;
+  }
+  return normalized;
+}
+
+function countCards(cards) {
+  const counts = new Map();
+  for (const raw of cards || []) {
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return counts;
 }
 
 function handleSwapSeat(ws, { roomId, targetSeat }, rm) {

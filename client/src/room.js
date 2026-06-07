@@ -44,6 +44,8 @@ const state = {
     tables: [],
   },
 };
+let cardInstanceSeq = 1;
+let deckSaveTimer = null;
 
 /* ======================== DOM UTILS ======================== */
 const el = (id) => document.getElementById(id);
@@ -75,6 +77,20 @@ function raceName(r) { return RACE_NAMES[r] || ''; }
 function attrName(a) { return ATTR_NAMES[a] || ''; }
 function cacheCard(card) { if (card && card.id) state.cardCache[card.id] = card; }
 function cacheCards(cards) { for (const c of cards) cacheCard(c); }
+function ensureCardInstance(card) {
+  if (!card) return '';
+  if (!card._draftInstanceId) {
+    Object.defineProperty(card, '_draftInstanceId', {
+      value: 'card_' + cardInstanceSeq++,
+      enumerable: false,
+    });
+  }
+  return card._draftInstanceId;
+}
+function ensureCardInstances(cards) {
+  for (const card of cards || []) ensureCardInstance(card);
+  return cards || [];
+}
 
 /** Build a stat line: "Lv4 ATK/1800 DEF/1200" etc. */
 function statLine(card) {
@@ -386,12 +402,10 @@ function setupHandlers() {
     hide(el('stopAutoDraftBtn'));
     const myPool = msg.payload.pools[state.playerId];
     if (myPool) {
-      cacheCards(myPool.cards || []);
+      const poolCards = ensureCardInstances(myPool.cards || []);
+      cacheCards(poolCards);
       if (!alreadyHadLocalPool) {
-        state.results.pool = myPool.cards || [];
-        state.results.main = [];
-        state.results.extra = [];
-        state.results.side = [];
+        applySavedOrDefaultDeck(poolCards, msg.payload.savedDeck);
       }
     }
     // Store tables for battle lobby
@@ -819,6 +833,54 @@ function findCardZone(card) {
 }
 
 /* ======================== RESULTS / DECK EDITOR ======================== */
+function applySavedOrDefaultDeck(cards, savedDeck) {
+  const ownedCards = ensureCardInstances(cards || []);
+  if (savedDeck && restoreSavedDeck(ownedCards, savedDeck)) return;
+
+  state.results.pool = [];
+  state.results.main = ownedCards.filter(card => !isExtraType(card.type || 0));
+  state.results.extra = ownedCards.filter(card => isExtraType(card.type || 0));
+  state.results.side = [];
+  queueDeckSave();
+}
+
+function restoreSavedDeck(ownedCards, savedDeck) {
+  const remaining = new Map();
+  for (const card of ownedCards) {
+    const id = Number(card.id);
+    if (!remaining.has(id)) remaining.set(id, []);
+    remaining.get(id).push(card);
+  }
+
+  const take = (id) => {
+    const bucket = remaining.get(Number(id));
+    return bucket && bucket.length ? bucket.shift() : null;
+  };
+  const restoreSection = (ids) => {
+    const cards = [];
+    for (const id of ids || []) {
+      const card = take(id);
+      if (!card) return null;
+      cards.push(card);
+    }
+    return cards;
+  };
+
+  const main = restoreSection(savedDeck.main);
+  const extra = restoreSection(savedDeck.extra);
+  const side = restoreSection(savedDeck.side);
+  const pool = restoreSection(savedDeck.pool);
+  if (!main || !extra || !side || !pool) return false;
+
+  const leftovers = [];
+  for (const bucket of remaining.values()) leftovers.push(...bucket);
+  state.results.main = main;
+  state.results.extra = extra;
+  state.results.side = side;
+  state.results.pool = [...pool, ...leftovers];
+  return true;
+}
+
 function initResults() {
   renderPool();
   renderDeckZone('mainDeck', state.results.main);
@@ -830,13 +892,12 @@ function initResults() {
 function renderPool() {
   const grid = el('poolGrid'); if (!grid) return;
   clear(grid);
-  for (const card of state.results.pool) {
-    const cel = makeCardEl(card, { draggable: true });
-    cel.addEventListener('click', () => showCardDetail(card, 'pool'));
-    cel.addEventListener('dblclick', () => {
-      const target = isExtraType(card.type) ? 'extra' : 'main';
-      moveCard(card, 'pool', target);
-    });
+  if (!state.results.pool.length) {
+    grid.appendChild(makeEmptyDeckHint('没有未加入卡片'));
+  }
+  for (let i = 0; i < state.results.pool.length; i++) {
+    const card = state.results.pool[i];
+    const cel = makeDeckThumbEl(card, 'pool', i);
     grid.appendChild(cel);
   }
   setText('poolCount', '(' + state.results.pool.length + '张)');
@@ -846,24 +907,144 @@ function renderDeckZone(zoneId, cards) {
   const zone = el(zoneId);
   if (!zone) return;
   clear(zone);
-  for (const card of cards) {
-    const cel = makeCardEl(card, { small: true });
-    cel.addEventListener('click', () => showCardDetail(card, 'pool'));
-    cel.addEventListener('dblclick', () => moveCard(card, zoneId, 'pool'));
+  if (!cards.length) {
+    zone.appendChild(makeEmptyDeckHint('这里还没有卡片'));
+  }
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
+    const cel = makeDeckThumbEl(card, zoneId, i);
     zone.appendChild(cel);
   }
 }
 
-function moveCard(card, from, to) {
+function makeEmptyDeckHint(text) {
+  const div = document.createElement('div');
+  div.className = 'deck-empty';
+  div.textContent = text;
+  return div;
+}
+
+function makeDeckThumbEl(card, zoneId, index) {
+  const div = document.createElement('div');
+  div.className = 'deck-card-thumb';
+  div.draggable = true;
+  div.dataset.inst = ensureCardInstance(card);
+  div.dataset.zone = zoneId;
+  div.dataset.index = String(index);
+
+  const img = document.createElement('img');
+  img.className = 'deck-card-img';
+  img.src = cardImgUrl(card.id);
+  img.alt = card.name || '';
+  img.loading = 'lazy';
+
+  const fallback = document.createElement('div');
+  fallback.className = 'deck-card-no-img hidden';
+  fallback.textContent = '无卡图';
+  img.addEventListener('error', () => {
+    img.classList.add('hidden');
+    fallback.classList.remove('hidden');
+  });
+
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = zoneId === 'pool' ? 'deck-card-action add' : 'deck-card-action remove';
+  action.title = zoneId === 'pool' ? '加入卡组' : '移出到未加入卡池';
+  action.setAttribute('aria-label', action.title);
+  action.textContent = zoneId === 'pool' ? '+' : 'x';
+
+  const name = document.createElement('div');
+  name.className = 'deck-card-name';
+  name.textContent = card.name || '???';
+
+  div.append(img, fallback, action, name);
+
+  div.addEventListener('click', (e) => {
+    if (e.target === action) return;
+    showCardDetail(card, 'pool');
+  });
+  div.addEventListener('dblclick', () => {
+    if (zoneId === 'pool') moveCard(card, 'pool', defaultDeckZoneForCard(card));
+    else moveCard(card, zoneId, 'pool');
+  });
+  action.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (zoneId === 'pool') moveCard(card, 'pool', defaultDeckZoneForCard(card));
+    else moveCard(card, zoneId, 'pool');
+  });
+  div.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('application/x-card-instance', ensureCardInstance(card));
+    e.dataTransfer.setData('text/plain', String(card.id));
+    e.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => div.classList.add('dragging'), 0);
+  });
+  div.addEventListener('dragend', () => div.classList.remove('dragging'));
+
+  return div;
+}
+
+function defaultDeckZoneForCard(card) {
+  return isExtraType(card.type || 0) ? 'extra' : 'main';
+}
+
+function findCardByInstance(instanceId) {
+  if (!instanceId) return null;
+  for (const card of getAllDraftedCards()) {
+    if (ensureCardInstance(card) === instanceId) return card;
+  }
+  return null;
+}
+
+function canMoveCardToZone(card, to) {
+  if (!card || !to) return false;
+  if (to === 'main' || to === 'mainDeck') return !isExtraType(card.type || 0);
+  if (to === 'extra' || to === 'extraDeck') return isExtraType(card.type || 0);
+  return true;
+}
+
+function getDropInsertIndex(zone, event) {
+  const target = event.target?.closest?.('.deck-card-thumb');
+  if (!target || !zone.contains(target)) return null;
+
+  const items = [...zone.querySelectorAll('.deck-card-thumb')];
+  const targetIndex = items.indexOf(target);
+  if (targetIndex < 0) return null;
+
+  const rect = target.getBoundingClientRect();
+  const columns = getComputedStyle(zone).gridTemplateColumns.split(' ').filter(Boolean).length;
+  const centerY = rect.top + rect.height / 2;
+  const centerX = rect.left + rect.width / 2;
+  const sameRowBand = Math.abs(event.clientY - centerY) < rect.height * 0.35;
+  const before = columns > 1 && sameRowBand
+    ? event.clientX < centerX
+    : event.clientY < centerY;
+  return targetIndex + (before ? 0 : 1);
+}
+
+function moveCard(card, from, to, insertIndex = null) {
+  if (!canMoveCardToZone(card, to)) {
+    const targetText = to === 'extra' || to === 'extraDeck' ? '额外卡组' : '主卡组';
+    alert('这张卡不能放入' + targetText);
+    return;
+  }
+
   const src = getZoneList(from);
+  let oldIndex = -1;
   if (src) {
-    const i = src.indexOf(card);
-    if (i >= 0) src.splice(i, 1);
+    oldIndex = src.indexOf(card);
+    if (oldIndex >= 0) src.splice(oldIndex, 1);
   }
 
   const dst = getZoneList(to);
   if (dst) {
-    if (!dst.includes(card)) dst.push(card);
+    if (src === dst && oldIndex >= 0 && insertIndex !== null && oldIndex < insertIndex) {
+      insertIndex--;
+    }
+    if (insertIndex === null || insertIndex < 0 || insertIndex > dst.length) {
+      dst.push(card);
+    } else {
+      dst.splice(insertIndex, 0, card);
+    }
   }
 
   renderPool();
@@ -871,6 +1052,7 @@ function moveCard(card, from, to) {
   renderDeckZone('extraDeck', state.results.extra);
   renderDeckZone('sideDeck', state.results.side);
   updateCounts();
+  queueDeckSave();
 }
 
 function updateCounts() {
@@ -897,6 +1079,24 @@ function buildYdk() {
     ids(state.results.side),
     'USTC-OnlineCube',
   );
+}
+
+function serializeDeckState() {
+  const ids = (cards) => cards.map(c => Number(c.id)).filter(id => Number.isFinite(id) && id > 0);
+  return {
+    main: ids(state.results.main),
+    extra: ids(state.results.extra),
+    side: ids(state.results.side),
+    pool: ids(state.results.pool),
+  };
+}
+
+function queueDeckSave() {
+  if (!state.roomId || !state.playerId || state.draft.phase !== 'done') return;
+  clearTimeout(deckSaveTimer);
+  deckSaveTimer = setTimeout(() => {
+    wsSend('save_deck', { roomId: state.roomId, deck: serializeDeckState() });
+  }, 250);
 }
 
 function buildYdkFromIds(mainIds, extraIds, sideIds, label) {
@@ -1414,15 +1614,22 @@ function bindEvents() {
   const dropSetup = (zoneId, deckKey) => {
     const zone = el(zoneId);
     if (!zone) return;
-    zone.addEventListener('dragover', e => e.preventDefault());
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      zone.classList.add('drag-over');
+    });
+    zone.addEventListener('dragleave', e => {
+      if (!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over');
+    });
     zone.addEventListener('drop', e => {
       e.preventDefault();
-      const cid = parseInt(e.dataTransfer.getData('text/plain'));
-      const all = [...state.results.pool, ...state.results.main, ...state.results.extra, ...state.results.side];
-      const card = all.find(c => c.id === cid);
+      zone.classList.remove('drag-over');
+      const instanceId = e.dataTransfer.getData('application/x-card-instance');
+      const card = findCardByInstance(instanceId);
       if (card) {
         const from = findCardZone(card) || 'pool';
-        moveCard(card, from, deckKey);
+        moveCard(card, from, deckKey, getDropInsertIndex(zone, e));
       }
     });
   };

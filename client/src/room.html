@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>USTC-OnlineCube - 房间</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=18">
 </head>
 <body>
 
@@ -94,25 +94,25 @@
 <div id="results" class="view">
   <div class="results-header">
     <h2>轮抽完成！</h2>
-    <p>以下是你的卡池，拖拽或点击卡片来构筑你的卡组</p>
+    <p>已默认加入全部轮抽卡片，可移出卡片或拖动缩略图调整顺序</p>
   </div>
   <div class="deck-editor">
     <div class="deck-zone">
-      <h3>卡池 <small id="poolCount"></small></h3>
-      <div id="poolGrid" class="card-grid"></div>
+      <h3>未加入卡池 <small id="poolCount"></small></h3>
+      <div id="poolGrid" class="deck-thumb-grid"></div>
     </div>
     <div class="deck-zones">
       <div class="zone-card">
         <h3>主卡组 <small id="mainCount">(40-60)</small></h3>
-        <div id="mainDeck" class="card-grid card-grid-sm"></div>
+        <div id="mainDeck" class="deck-thumb-grid"></div>
       </div>
       <div class="zone-card">
         <h3>额外卡组 <small id="extraCount">(0-15)</small></h3>
-        <div id="extraDeck" class="card-grid card-grid-sm"></div>
+        <div id="extraDeck" class="deck-thumb-grid"></div>
       </div>
       <div class="zone-card">
         <h3>副卡组 <small id="sideCount">(0-15)</small></h3>
-        <div id="sideDeck" class="card-grid card-grid-sm"></div>
+        <div id="sideDeck" class="deck-thumb-grid"></div>
       </div>
       <div id="deckActions" class="deck-actions">
         <button id="exportYdkBtn" class="btn-primary">导出 YDK</button>
@@ -161,6 +161,6 @@
   <div id="battleTables" class="battle-tables"></div>
 </div>
 
-<script type="module" src="room.js?v=17"></script>
+<script type="module" src="room.js?v=18"></script>
 </body>
 </html>
