@@ -47,6 +47,7 @@ let duelOptions = { scriptPath: null, cardsCdbPath: null };
 /**
  * @typedef {object} PendingPlayer
  * @property {import('ws').WebSocket|null} ws
+ * @property {string|null} id
  * @property {string} name
  * @property {boolean} ready
  * @property {{main: number[], side: number[]}|null} deck
@@ -58,6 +59,7 @@ let duelOptions = { scriptPath: null, cardsCdbPath: null };
  * @property {string} passWd
  * @property {PendingPlayer[]} players
  * @property {{main: number[], extra: number[]}[]|null} preloadedDecks  // if preloaded from cube-draft
+ * @property {{id: string|null, name: string}[]|null} expectedPlayers
  * @property {boolean} testMode
  * @property {string|null} tableId
  * @property {string|null} draftRoomId
@@ -79,6 +81,7 @@ function getOrCreateRoom(passWd) {
       passWd,
       players: [],
       preloadedDecks: null,
+      expectedPlayers: null,
       testMode: false,
       tableId: null,
       draftRoomId: null,
@@ -100,6 +103,7 @@ function getOrCreateRoom(passWd) {
 export function registerPreloadedDecks(passWd, decks, options = {}) {
   const room = getOrCreateRoom(passWd);
   room.preloadedDecks = decks;
+  room.expectedPlayers = normalizeExpectedPlayers(options.players || options.expectedPlayers || null);
   room.testMode = options.testMode === true;
   room.tableId = options.tableId || room.tableId || null;
   room.draftRoomId = options.roomId || room.draftRoomId || null;
@@ -107,6 +111,40 @@ export function registerPreloadedDecks(passWd, decks, options = {}) {
   room.finished = false;
   console.log(`[ygopro-ws] Registered preloaded decks for room "${passWd}"`);
   return room;
+}
+
+function normalizeExpectedPlayers(players) {
+  if (!Array.isArray(players)) return null;
+  return players.slice(0, 2).map((player, index) => ({
+    id: player?.id ? String(player.id) : null,
+    name: String(player?.name || `Player${index + 1}`).trim() || `Player${index + 1}`,
+  }));
+}
+
+function parsePlayerIdentity(rawName) {
+  const raw = String(rawName || '').trim() || 'Player';
+  const match = raw.match(/^(.*)#pid:([a-zA-Z0-9_.-]+)$/);
+  if (!match) return { raw, name: raw, id: null };
+  return {
+    raw,
+    name: match[1].trim() || 'Player',
+    id: match[2] || null,
+  };
+}
+
+function findExpectedPlayerPosition(room, identity) {
+  if (!room?.expectedPlayers) return -1;
+  return room.expectedPlayers.findIndex((player) => {
+    if (!player) return false;
+    if (player.id && identity.id && player.id === identity.id) return true;
+    return player.name === identity.name;
+  });
+}
+
+function isSamePlayerIdentity(player, identity) {
+  if (!player) return false;
+  if (player.id && identity.id) return player.id === identity.id;
+  return player.name === identity.name;
 }
 
 // ── Player connection handler ─────────────────
@@ -138,19 +176,26 @@ export function handleYgoproConnection(ws, options = {}) {
         switch (proto) {
           case CTOS_PLAYER_INFO: {
             playerName = parsePlayerInfo(exData);
-            console.log(`[ygopro-ws] Player info: ${playerName}`);
+            console.log(`[ygopro-ws] Player info: ${parsePlayerIdentity(playerName).name}`);
             break;
           }
 
           case CTOS_JOIN_GAME: {
             const { passWd } = parseJoinGame(exData);
-            console.log(`[ygopro-ws] ${playerName} joining room "${passWd}"`);
+            const identity = parsePlayerIdentity(playerName);
+            console.log(`[ygopro-ws] ${identity.name} joining room "${passWd}"`);
 
             currentRoom = getOrCreateRoom(passWd);
+            const expectedPosition = findExpectedPlayerPosition(currentRoom, identity);
+            if (currentRoom.expectedPlayers && expectedPosition === -1) {
+              console.warn(`[ygopro-ws] Rejecting unexpected player "${identity.name}" for preloaded room "${passWd}"`);
+              ws.send(buildStocErrorMsg(null, 1, 0));
+              return;
+            }
 
             const reconnectPosition = [0, 1].find((index) => {
               const player = currentRoom.players[index];
-              return player?.name === playerName;
+              return isSamePlayerIdentity(player, identity);
             });
 
             if (currentRoom.session && reconnectPosition === undefined) {
@@ -160,7 +205,9 @@ export function handleYgoproConnection(ws, options = {}) {
 
             // Assign position. A reconnecting player must get the original
             // seat; otherwise private state and response ownership diverge.
-            const openPosition = reconnectPosition ?? [0, 1].find((index) => !currentRoom.players[index]);
+            const openPosition = expectedPosition >= 0
+              ? expectedPosition
+              : reconnectPosition ?? [0, 1].find((index) => !currentRoom.players[index]);
             if (openPosition === undefined) {
               // Room full → send error and make observer? For now, error
               ws.send(buildStocErrorMsg(null, 1, 0)); // JOINERROR, code=0 → generic join error
@@ -168,10 +215,20 @@ export function handleYgoproConnection(ws, options = {}) {
             }
             playerPosition = openPosition;
             const previousPlayer = currentRoom.players[playerPosition];
+            if (previousPlayer && !isSamePlayerIdentity(previousPlayer, identity)) {
+              console.warn(
+                `[ygopro-ws] Rejecting "${identity.name}" for occupied position ${playerPosition} ` +
+                `in room "${passWd}"`,
+              );
+              ws.send(buildStocErrorMsg(null, 1, 0));
+              return;
+            }
+            const expectedPlayer = currentRoom.expectedPlayers?.[playerPosition] || null;
             currentRoom.players[playerPosition] = {
               ...previousPlayer,
               ws,
-              name: playerName,
+              id: expectedPlayer?.id || identity.id || previousPlayer?.id || null,
+              name: expectedPlayer?.name || identity.name,
               ready: previousPlayer?.ready ?? false,
               deck: previousPlayer?.deck ?? null,
               disconnectedAt: null,
@@ -190,12 +247,12 @@ export function handleYgoproConnection(ws, options = {}) {
             }
 
             if (currentRoom.session) {
-              console.log(`[ygopro-ws] ${playerName} reconnected to active duel room "${passWd}" as player ${playerPosition}`);
+              console.log(`[ygopro-ws] ${identity.name} reconnected to active duel room "${passWd}" as player ${playerPosition}`);
               sendDuelReconnectSnapshot(currentRoom, playerPosition);
 
               const otherPlayer = currentRoom.players[1 - playerPosition];
               if (otherPlayer?.ws && otherPlayer.ws.readyState === WS_OPEN) {
-                otherPlayer.ws.send(buildStocChat(0, `${playerName} has reconnected`));
+                otherPlayer.ws.send(buildStocChat(0, `${identity.name} has reconnected`));
               }
               break;
             }
@@ -214,7 +271,7 @@ export function handleYgoproConnection(ws, options = {}) {
                 }
               }
 
-              console.log(`[ygopro-ws] ${playerName} auto-readied (preloaded room)`);
+              console.log(`[ygopro-ws] ${identity.name} auto-readied (preloaded room)`);
 
               // Check if both players are now ready → auto-start duel
               if (currentRoom.players.filter(Boolean).length >= 2 &&
@@ -235,7 +292,7 @@ export function handleYgoproConnection(ws, options = {}) {
                 currentRoom.clientDecks.push(null);
               }
               currentRoom.clientDecks[playerPosition] = deck;
-              console.log(`[ygopro-ws] ${playerName} submitted deck: ${deck.main.length} cards`);
+              console.log(`[ygopro-ws] ${parsePlayerIdentity(playerName).name} submitted deck: ${deck.main.length} cards`);
             }
             break;
           }
@@ -252,7 +309,7 @@ export function handleYgoproConnection(ws, options = {}) {
                 }
               }
 
-              console.log(`[ygopro-ws] ${playerName} is ready in room "${currentRoom.passWd}"`);
+              console.log(`[ygopro-ws] ${parsePlayerIdentity(playerName).name} is ready in room "${currentRoom.passWd}"`);
 
               // Check if both players are ready
               if (currentRoom.players.filter(Boolean).length >= 2 &&
@@ -297,7 +354,7 @@ export function handleYgoproConnection(ws, options = {}) {
               if (waitingPlayer === 0 || waitingPlayer === 1) {
                 const expectedPlayer = currentRoom.players[waitingPlayer];
                 if (expectedPlayer?.ws !== ws) {
-                  console.warn(`[ygopro-ws] Ignoring response from ${playerName}; waiting for player ${waitingPlayer}`);
+                  console.warn(`[ygopro-ws] Ignoring response from ${parsePlayerIdentity(playerName).name}; waiting for player ${waitingPlayer}`);
                   break;
                 }
               }
@@ -346,7 +403,7 @@ export function handleYgoproConnection(ws, options = {}) {
   });
 
   ws.on('close', () => {
-    console.log(`[ygopro-ws] ${playerName} disconnected`);
+    console.log(`[ygopro-ws] ${parsePlayerIdentity(playerName).name} disconnected`);
 
     if (currentRoom) {
       if (
@@ -370,7 +427,7 @@ export function handleYgoproConnection(ws, options = {}) {
       const otherPlayer = currentRoom.players[otherPos];
       if (otherPlayer?.ws && otherPlayer.ws.readyState === WS_OPEN) {
         otherPlayer.ws.send(buildStocHsPlayerChange(0, playerPosition));
-        otherPlayer.ws.send(buildStocChat(0, `${playerName} has disconnected and may reconnect`));
+        otherPlayer.ws.send(buildStocChat(0, `${parsePlayerIdentity(playerName).name} has disconnected and may reconnect`));
       }
 
       if (!currentRoom.session && currentRoom.players.every((p) => !p || !p.ws)) {
@@ -844,6 +901,7 @@ function startCleanup() {
       pendingRooms.delete(passWd);
     }
   }, CLEANUP_INTERVAL);
+  cleanupTimer.unref?.();
 }
 
 startCleanup();

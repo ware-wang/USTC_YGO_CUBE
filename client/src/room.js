@@ -7,7 +7,7 @@ import { wsClient } from './ws/client.js';
 /* ======================== CONSTANTS ======================== */
 const CARD_IMG_BASE = 'https://images.ygoprodeck.com/images/cards/';
 
-const T_MONSTER = 0x1, T_SPELL = 0x2, T_TRAP = 0x4;
+const T_MONSTER = 0x1, T_SPELL = 0x2, T_TRAP = 0x4, T_TUNER = 0x1000;
 const T_FUSION = 0x40, T_SYNCHRO = 0x2000, T_XYZ = 0x800000, T_LINK = 0x4000000;
 
 const RACE_NAMES = {
@@ -92,13 +92,22 @@ function ensureCardInstances(cards) {
   return cards || [];
 }
 
-/** Build a stat line: "Lv4 ATK/1800 DEF/1200" etc. */
+function statValue(value) {
+  return value === -2 || value === null || value === undefined ? '?' : value;
+}
+
+function tunerLabel(t) {
+  return (t & T_TUNER) ? '调整' : '非调整';
+}
+
+/** Build a stat line: "Lv4 调整 ATK/1800 DEF/1200" etc. */
 function statLine(card) {
   const t = card.type || 0;
   if (!(t & T_MONSTER)) return '';
-  if (t & T_LINK) return 'ATK/' + (card.atk||'?') + '  LINK-' + (card.level||0);
-  if (t & T_XYZ) return 'R' + (card.level||0) + '  ATK/' + (card.atk||'?') + '  DEF/' + (card.def||'?');
-  return 'Lv' + (card.level||0) + '  ATK/' + (card.atk||'?') + '  DEF/' + (card.def||'?');
+  const label = tunerLabel(t);
+  if (t & T_LINK) return 'LINK-' + (card.level || 0) + '  ' + label + '  ATK/' + statValue(card.atk);
+  if (t & T_XYZ) return 'R' + (card.level || 0) + '  ' + label + '  ATK/' + statValue(card.atk) + '  DEF/' + statValue(card.def);
+  return 'Lv' + (card.level || 0) + '  ' + label + '  ATK/' + statValue(card.atk) + '  DEF/' + statValue(card.def);
 }
 
 function cardHTML(card, small) {
@@ -422,6 +431,7 @@ function setupHandlers() {
 
   wsClient.on('ydk', (msg) => {
     setText('ydkContent', msg.payload.content);
+    window._lastYdk = msg.payload.content || '';
     show(el('ydkModal'));
   });
 
@@ -1215,14 +1225,64 @@ function handleExportYdk() {
   show(el('ydkModal'));
 }
 
-function handleCopyYdk() {
-  navigator.clipboard.writeText(buildYdk()).then(() => {
-    const b = el('copyYdkBtn'); if (b) { b.textContent = '已复制'; setTimeout(()=>{b.textContent='复制';},2000); }
-  });
+function getYdkModalContent() {
+  const displayed = el('ydkContent')?.textContent || '';
+  return displayed || window._lastYdk || buildYdk();
+}
+
+async function handleCopyYdk() {
+  const content = getYdkModalContent();
+  if (!content.trim()) {
+    alert('没有可复制的 YDK 内容');
+    return;
+  }
+
+  const copied = await copyText(content);
+  flashButtonText('copyYdkBtn', copied ? '已复制' : '复制失败', '复制');
+  if (!copied) alert('复制失败。请手动选中弹窗中的 YDK 内容复制。');
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_) {
+      // Fall through to the textarea method below. Clipboard API can fail on
+      // permission denial even when the API exists.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (_) {
+    copied = false;
+  }
+  textarea.remove();
+  return copied;
+}
+
+function flashButtonText(id, text, restoreText) {
+  const button = el(id);
+  if (!button) return;
+  button.textContent = text;
+  setTimeout(() => { button.textContent = restoreText; }, 2000);
 }
 
 function handleDownloadYdk() {
-  const blob = new Blob([buildYdk()], { type: 'text/plain' });
+  const blob = new Blob([getYdkModalContent()], { type: 'text/plain' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'deck-' + Date.now() + '.ydk';
@@ -1337,7 +1397,7 @@ function renderBattleTables() {
       reopenBtn.textContent = '重新打开对战';
       reopenBtn.onclick = () => {
         const passWd = t.duelPassWd || battlePasswdFromTableId(t.id);
-        const duelUrl = `/neos/duelroom?passwd=${encodeURIComponent(passWd)}&player=${encodeURIComponent(state.playerName || 'Player')}`;
+        const duelUrl = buildNeosDuelUrl(passWd);
         window.open(duelUrl, '_blank');
       };
       card.appendChild(reopenBtn);
@@ -1459,6 +1519,15 @@ function battlePasswdFromTableId(tableId) {
   return 'cube_' + String(tableId || '').replace(/\W/g, '').slice(0, 14);
 }
 
+function buildNeosDuelPlayerParam() {
+  const name = state.playerName || 'Player';
+  return state.playerId ? '#pid:' + state.playerId : name;
+}
+
+function buildNeosDuelUrl(passWd) {
+  return `/neos/duelroom?passwd=${encodeURIComponent(passWd)}&player=${encodeURIComponent(buildNeosDuelPlayerParam())}`;
+}
+
 /**
  * Handle neos-ts duel launch response from server.
  * When both players submit YDKs, server auto-creates a ygopro room.
@@ -1475,7 +1544,7 @@ function handleLaunchNeos(payload) {
 
   const { passWd, neosUrl, players, instructions } = payload;
   const playerName = state.playerName || 'Player';
-  const duelUrl = `/neos/duelroom?passwd=${encodeURIComponent(passWd)}&player=${encodeURIComponent(playerName)}`;
+  const duelUrl = buildNeosDuelUrl(passWd);
 
   // Store the latest duel URL for button click
   state._pendingDuelUrl = duelUrl;

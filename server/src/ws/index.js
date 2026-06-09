@@ -17,7 +17,7 @@ import { getConnectionInfo, logRoomEvent } from '../draft-log/index.js';
 const clients = new Map();
 const connectionInfoByWs = new Map();
 const DRAFT_PICK_TIMEOUT_MS = parseInt(process.env.DRAFT_PICK_TIMEOUT_MS || '60000', 10);
-const DRAFT_DISCONNECT_GRACE_MS = parseInt(process.env.DRAFT_DISCONNECT_GRACE_MS || '10000', 10);
+const DRAFT_DISCONNECT_GRACE_MS = parseInt(process.env.DRAFT_DISCONNECT_GRACE_MS || '60000', 10);
 const draftRoundTimers = new Map();
 const draftDisconnectTimers = new Map();
 
@@ -1051,11 +1051,16 @@ async function launchNeosDuel(tableId, roomId) {
   const passWd = `cube_${tableId.replace(/\W/g, '').slice(0, 14)}`;
 
   try {
+    const expectedPlayers = tableDecks.players.map((player, index) => ({
+      id: player.id,
+      name: findClientByPlayer(roomId, player.id)?.playerName || `Player${index + 1}`,
+    }));
     const { registerPreloadedDecks } = await import('../duel-bridge/ygopro-ws.js');
     registerPreloadedDecks(passWd, [
       { main: tableDecks.players[0].deck.main || [], extra: tableDecks.players[0].deck.extra || [], side: [] },
       { main: tableDecks.players[1].deck.main || [], extra: tableDecks.players[1].deck.extra || [], side: [] },
     ], {
+      players: expectedPlayers,
       testMode: tableDecks.testMode === true,
       tableId,
       roomId,
@@ -1063,8 +1068,8 @@ async function launchNeosDuel(tableId, roomId) {
     });
 
     const neosUrl = '/neos/duelroom';
-    const p1Name = findClientByPlayer(roomId, tableDecks.players[0].id)?.playerName || 'Player1';
-    const p2Name = findClientByPlayer(roomId, tableDecks.players[1].id)?.playerName || 'Player2';
+    const p1Name = expectedPlayers[0]?.name || 'Player1';
+    const p2Name = expectedPlayers[1]?.name || 'Player2';
 
     console.log(`[launchNeosDuel] Room "${passWd}" created for table ${tableId}`);
 

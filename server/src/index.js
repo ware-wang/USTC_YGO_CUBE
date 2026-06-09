@@ -337,7 +337,12 @@ async function main() {
       const passWd = roomId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cube';
       
       // Register preloaded decks with the ygopro WS handler
-      registerPreloadedDecks(passWd, decks);
+      registerPreloadedDecks(passWd, decks, {
+        players: players.map((player, index) => ({
+          id: player.id ? String(player.id) : null,
+          name: String(player.name || `Player${index + 1}`),
+        })),
+      });
 
       const neosUrl = `/neos/duelroom`;
 
