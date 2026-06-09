@@ -3,3 +3,4 @@ archives/
 *.tar.gz
 .DS_Store
 *.log
+server/data/logs/

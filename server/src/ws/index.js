@@ -11,9 +11,11 @@ import { parse as parseUrl } from 'url';
 import { DRAFT_STATES } from '../draft/index.js';
 import { handleYgoproConnection } from '../duel-bridge/ygopro-ws.js';
 import { getCardScriptStatus } from '../duel-bridge/card-script-status.js';
+import { getConnectionInfo, logRoomEvent } from '../draft-log/index.js';
 
 /** Map ws → { roomId, playerId, playerName, duelSessionId?, duelPosition? } */
 const clients = new Map();
+const connectionInfoByWs = new Map();
 const DRAFT_PICK_TIMEOUT_MS = parseInt(process.env.DRAFT_PICK_TIMEOUT_MS || '60000', 10);
 const DRAFT_DISCONNECT_GRACE_MS = parseInt(process.env.DRAFT_DISCONNECT_GRACE_MS || '10000', 10);
 const draftRoundTimers = new Map();
@@ -30,6 +32,12 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge,
   roomManager.onRoomDeleted?.((room, reason) => {
     clearDraftRoundTimer(room.id);
     clearRoomDisconnectedDraftPicks(room.id);
+    logRoomEvent(room.id, 'room_deleted', {
+      reason: reason || null,
+      room: summarizeRoom(room),
+      players: summarizePlayers(room),
+      draft: summarizeDraft(room),
+    });
     duelManagerRef?.deleteRoomTables?.(room.id);
     closeRoomClients(room.id, reason);
   });
@@ -38,7 +46,8 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge,
   const jsonWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   const ygoproWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
-  jsonWss.on('connection', (ws) => {
+  jsonWss.on('connection', (ws, request) => {
+    connectionInfoByWs.set(ws, getConnectionInfo(request));
     console.log('[WS] New connection');
     ws.on('message', (raw) => {
       let msg;
@@ -46,13 +55,23 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge,
       catch { return; }
       handleMessage(ws, msg, roomManager);
     });
-    ws.on('close', () => {
+    ws.on('close', (code, reasonBuffer) => {
       const client = clients.get(ws);
+      connectionInfoByWs.delete(ws);
       if (!client) return;
 
       clients.delete(ws);
       const room = roomManager.disconnectPlayer(client.roomId, client.playerId);
       if (room) {
+        logRoomEvent(client.roomId, 'player_disconnected', {
+          player: summarizePlayer(room.players.find(p => p.id === client.playerId), client),
+          connection: client.connection,
+          close: {
+            code,
+            reason: reasonBuffer ? reasonBuffer.toString() : '',
+          },
+          draft: summarizeDraft(room),
+        });
         broadcast(client.roomId, roomManager, null, {
           type: 'room_update',
           payload: { room: roomManager.getRoomPublic(client.roomId) },
@@ -132,6 +151,121 @@ function send(ws, msg) {
   if (ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
+function getWsConnection(ws) {
+  return connectionInfoByWs.get(ws) || {
+    ip: null,
+    forwardedFor: null,
+    realIp: null,
+    cfIp: null,
+    remoteAddress: null,
+    userAgent: null,
+  };
+}
+
+function summarizePlayer(player, client = null) {
+  if (!player && !client) return null;
+  return {
+    id: player?.id || client?.playerId || null,
+    name: player?.name || client?.playerName || null,
+    seatIndex: Number.isInteger(player?.seatIndex) ? player.seatIndex : null,
+    connected: player ? !player.disconnectedAt : null,
+  };
+}
+
+function summarizePlayers(room) {
+  return (room?.players || []).map(player => summarizePlayer(player));
+}
+
+function summarizeRoom(room) {
+  if (!room) return null;
+  return {
+    id: room.id,
+    name: room.name,
+    cubeName: room.cubeName,
+    state: room.state,
+    maxPlayers: room.maxPlayers,
+    packsPerPlayer: room.packsPerPlayer,
+    cardsPerPack: room.cardsPerPack,
+    testMode: room.testMode === true,
+  };
+}
+
+function summarizeDraft(room) {
+  const draft = room?.draft;
+  if (!draft) return null;
+  return {
+    state: draft.state,
+    packIndex: draft.packIndex,
+    totalPacks: draft.packsPerPlayer,
+    pickRound: draft.pickRound,
+    direction: draft.direction,
+    confirmedCount: draft.confirmedThisRound?.size || 0,
+    totalPlayers: draft.players?.length || room?.players?.length || 0,
+  };
+}
+
+function summarizeCard(card) {
+  if (!card) return null;
+  return {
+    id: card.id,
+    name: card.name || null,
+    type: card.type || 0,
+    packSlot: Number.isInteger(card.packSlot) ? card.packSlot : null,
+  };
+}
+
+function summarizePack(pack) {
+  if (!pack) return null;
+  return {
+    packIndex: pack.packIndex,
+    totalPacks: pack.totalPacks,
+    remaining: pack.remaining,
+    direction: pack.direction,
+    confirmed: pack.confirmed === true,
+    picked: pack.picked || 0,
+    cards: (pack.cards || []).map(summarizeCard),
+  };
+}
+
+function findPackCard(pack, cardIndex, fallbackCardId = null) {
+  const cards = pack?.cards || [];
+  const slot = cardIndex === null || cardIndex === undefined ? NaN : Number(cardIndex);
+  return (Number.isInteger(slot) ? cards.find(card => card.packSlot === slot) : null) ||
+    cards.find(card => Number(card.id) === Number(fallbackCardId)) ||
+    null;
+}
+
+function lastPickedCard(room, playerId, fallbackCardId = null) {
+  const cards = room?.draft?.getPlayerPoolCards(playerId) || [];
+  return cards[cards.length - 1] || (fallbackCardId ? { id: fallbackCardId } : null);
+}
+
+function summarizePools(room) {
+  const pools = room?.draft?.getPlayerPools?.() || {};
+  const result = {};
+  for (const [playerId, pool] of Object.entries(pools)) {
+    result[playerId] = {
+      name: pool.name,
+      cardIds: pool.cardIds,
+      count: pool.cardIds?.length || 0,
+    };
+  }
+  return result;
+}
+
+function summarizeBattleTable(tableId) {
+  const table = duelManagerRef?.getTablePublic?.(tableId);
+  if (!table) return { id: tableId };
+  return {
+    id: table.id,
+    roomId: table.roomId,
+    state: table.state,
+    seats: table.seats,
+    winner: table.winner ?? null,
+    winnerSeat: table.winnerSeat ?? null,
+  };
+}
+
 function broadcast(roomId, rm, exclude, msg) {
   for (const [ws, c] of clients) {
     if (c.roomId === roomId && ws !== exclude && ws.readyState === 1) {
@@ -180,6 +314,10 @@ function handleNeosDuelEnded({ tableId, winnerPosition }) {
   if (!tableId) return;
   const table = duelManagerRef?.markTableFinished?.(tableId, winnerPosition);
   if (!table) return;
+  logRoomEvent(table.roomId, 'duel_finished', {
+    table: serializeBattleTable(table),
+    winnerPosition: Number.isInteger(winnerPosition) ? winnerPosition : null,
+  });
   broadcastRoomBattleTables(table.roomId);
 }
 
@@ -251,6 +389,7 @@ function closeRoomClients(roomId, reason) {
   for (const [ws, c] of clients) {
     if (c.roomId !== roomId) continue;
     clients.delete(ws);
+    connectionInfoByWs.delete(ws);
     send(ws, { type: 'error', payload: { message: '房间已关闭' } });
     try { ws.close(4001, `room deleted: ${reason || 'cleanup'}`); }
     catch {}
@@ -311,6 +450,14 @@ function autoPickUnconfirmed(roomId, rm, round, reason) {
   if (!isDraftingRoom(room)) return;
   if (room.draft.pickRound !== round) return;
 
+  logRoomEvent(roomId, 'auto_pick_unconfirmed_started', {
+    reason,
+    draft: summarizeDraft(room),
+    unconfirmedPlayers: (room.draft.players || room.players)
+      .filter(player => !room.draft.confirmedThisRound.has(player.id))
+      .map(player => summarizePlayer(room.players.find(p => p.id === player.id) || player)),
+  });
+
   const players = room.draft.players || room.players;
   for (const player of players) {
     if (room.draft.pickRound !== round) break;
@@ -321,13 +468,39 @@ function autoPickUnconfirmed(roomId, rm, round, reason) {
 }
 
 function autoPickPlayer(roomId, rm, room, playerId, reason) {
+  const player = room.players.find(p => p.id === playerId);
+  const draftBefore = summarizeDraft(room);
+  const packBefore = room.draft.getCurrentPack(playerId);
   const result = room.draft.autoPick(playerId);
   if (result.error) {
+    logRoomEvent(roomId, 'auto_pick_failed', {
+      reason,
+      error: result.error,
+      player: summarizePlayer(player),
+      connection: player?.lastConnection || null,
+      draft: draftBefore,
+      pack: summarizePack(packBefore),
+    });
     console.warn(`[Draft] Auto-pick failed room=${roomId} player=${playerId}: ${result.error}`);
     return result;
   }
 
   room.lastActive = Date.now();
+  logRoomEvent(roomId, 'card_picked', {
+    automatic: true,
+    reason,
+    player: summarizePlayer(player),
+    connection: player?.lastConnection || null,
+    draft: draftBefore,
+    card: summarizeCard(findPackCard(packBefore, null, result.pickedCardId) || lastPickedCard(room, playerId, result.pickedCardId)),
+    result: {
+      pickedCardId: result.pickedCardId,
+      allConfirmed: result.allConfirmed === true,
+      confirmedCount: result.confirmedCount,
+      totalPlayers: result.totalPlayers,
+      draftComplete: result.draftComplete === true,
+    },
+  });
   sendPickResult(roomId, room, playerId, result, true, reason);
   broadcastConfirmState(roomId, rm, room, result);
 
@@ -377,12 +550,22 @@ function broadcastConfirmState(roomId, rm, room, result = null) {
   });
 }
 
-function sendCurrentPacks(roomId, room) {
+function sendCurrentPacks(roomId, room, reason = 'round_advance') {
   const players = room.draft.players || room.players;
   for (const p of players) {
     const pack = room.draft.getCurrentPack(p.id);
     const pws = findPlayerWs(roomId, p.id);
-    if (pws && pack) send(pws, { type: 'pack', payload: pack });
+    if (pws && pack) {
+      const client = clients.get(pws);
+      send(pws, { type: 'pack', payload: pack });
+      logRoomEvent(roomId, 'pack_sent', {
+        reason,
+        player: summarizePlayer(room.players.find(player => player.id === p.id), client),
+        connection: client?.connection || null,
+        draft: summarizeDraft(room),
+        pack: summarizePack(pack),
+      });
+    }
   }
 }
 
@@ -394,6 +577,11 @@ function handleDraftAdvanced(roomId, rm, room, result) {
   if (result.draftComplete) {
     room.state = DRAFT_STATES.COMPLETE;
     const tables = getOrCreateBattleTables(room);
+    logRoomEvent(roomId, 'draft_completed', {
+      draft: summarizeDraft(room),
+      pools: summarizePools(room),
+      tables,
+    });
     broadcast(roomId, rm, null, {
       type: 'draft_complete',
       payload: { pools: room.draft.getPlayerPools(), tables },
@@ -401,7 +589,10 @@ function handleDraftAdvanced(roomId, rm, room, result) {
     return;
   }
 
-  sendCurrentPacks(roomId, room);
+  logRoomEvent(roomId, 'round_advanced', {
+    draft: summarizeDraft(room),
+  });
+  sendCurrentPacks(roomId, room, 'round_advance');
   broadcast(roomId, rm, null, { type: 'round_update', payload: { packIndex: room.draft.packIndex, totalPacks: room.draft.packsPerPlayer, direction: room.draft.direction } });
   scheduleDraftRoundTimer(roomId, rm, room);
   scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
@@ -414,15 +605,30 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 
   const { player, room } = result;
+  const connection = getWsConnection(ws);
   const previousWs = findPlayerWs(room.id, player.id);
   if (previousWs && previousWs !== ws) {
+    const previousClient = clients.get(previousWs);
+    logRoomEvent(room.id, 'player_connection_replaced', {
+      player: summarizePlayer(player),
+      previousConnection: previousClient?.connection || getWsConnection(previousWs),
+      newConnection: connection,
+      draft: summarizeDraft(room),
+    });
     clients.delete(previousWs);
     try { previousWs.close(4000, 'replaced by reconnect'); }
     catch {}
   }
 
-  clients.set(ws, { roomId: room.id, playerId: player.id, playerName });
+  player.lastConnection = connection;
+  clients.set(ws, { roomId: room.id, playerId: player.id, playerName, connection });
   clearDisconnectedDraftPick(room.id, player.id);
+  logRoomEvent(room.id, result.reconnected ? 'player_reconnected' : 'player_joined', {
+    player: summarizePlayer(player),
+    connection,
+    room: summarizeRoom(room),
+    draft: summarizeDraft(room),
+  });
 
   const pub = rm.getRoomPublic(roomId);
   send(ws, { type: 'joined', payload: { playerId: player.id, playerName: player.name, room: pub, reconnected: !!result.reconnected } });
@@ -434,7 +640,16 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
   if (isDraftingRoom(room)) {
     send(ws, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
     const pack = room.draft.getCurrentPack(player.id);
-    if (pack) send(ws, { type: 'pack', payload: pack });
+    if (pack) {
+      send(ws, { type: 'pack', payload: pack });
+      logRoomEvent(room.id, 'pack_sent', {
+        reason: 'join_during_draft',
+        player: summarizePlayer(player),
+        connection,
+        draft: summarizeDraft(room),
+        pack: summarizePack(pack),
+      });
+    }
   } else if (room.state === DRAFT_STATES.COMPLETE || room.draft?.state === DRAFT_STATES.COMPLETE) {
     const tables = getOrCreateBattleTables(room);
     send(ws, {
@@ -457,9 +672,16 @@ function handleStart(ws, { roomId }, rm) {
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
 
   const room = rm.getRoom(roomId);
+  logRoomEvent(roomId, 'draft_started', {
+    host: summarizePlayer(room.players.find(p => p.id === client.playerId), client),
+    connection: client.connection,
+    room: summarizeRoom(room),
+    players: summarizePlayers(room),
+    draft: summarizeDraft(room),
+  });
   broadcast(roomId, rm, null, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
 
-  sendCurrentPacks(roomId, room);
+  sendCurrentPacks(roomId, room, 'draft_start');
   scheduleDraftRoundTimer(roomId, rm, room);
   scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
 }
@@ -470,15 +692,55 @@ function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
 
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: '房间不存在' } });
+  const player = room.players.find(p => p.id === client.playerId);
+  const draftBefore = summarizeDraft(room);
+  const packBefore = room.draft.getCurrentPack(client.playerId);
+  const requestedCard = findPackCard(packBefore, cardIndex, cardId);
   const expectedCardId = Number(cardId);
   if (!Number.isInteger(expectedCardId) || expectedCardId <= 0) {
+    logRoomEvent(roomId, 'pick_rejected', {
+      reason: 'invalid_client_card_id',
+      player: summarizePlayer(player, client),
+      connection: client.connection,
+      draft: draftBefore,
+      request: { cardIndex, cardId },
+      pack: summarizePack(packBefore),
+    });
     return send(ws, { type: 'error', payload: { message: '客户端版本过旧，请刷新页面后重新选择' } });
   }
 
   const result = room.draft.confirmPick(client.playerId, cardIndex, expectedCardId);
-  if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  if (result.error) {
+    logRoomEvent(roomId, 'pick_rejected', {
+      reason: 'draft_engine_error',
+      error: result.error,
+      player: summarizePlayer(player, client),
+      connection: client.connection,
+      draft: draftBefore,
+      request: { cardIndex, cardId: expectedCardId },
+      requestedCard: summarizeCard(requestedCard),
+      pack: summarizePack(packBefore),
+    });
+    return send(ws, { type: 'error', payload: { message: result.error } });
+  }
   room.lastActive = Date.now();
   clearDisconnectedDraftPick(roomId, client.playerId);
+  logRoomEvent(roomId, 'card_picked', {
+    automatic: false,
+    reason: 'manual',
+    player: summarizePlayer(player, client),
+    connection: client.connection,
+    draft: draftBefore,
+    request: { cardIndex, cardId: expectedCardId },
+    card: summarizeCard(requestedCard || lastPickedCard(room, client.playerId, result.pickedCardId)),
+    result: {
+      pickedCardId: result.pickedCardId,
+      allConfirmed: result.allConfirmed === true,
+      confirmedCount: result.confirmedCount,
+      totalPlayers: result.totalPlayers,
+      draftComplete: result.draftComplete === true,
+    },
+  });
 
   sendPickResult(roomId, room, client.playerId, result);
   broadcastConfirmState(roomId, rm, room, result);
@@ -493,7 +755,16 @@ function handleGetPack(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   if (!room) return;
   const pack = room.draft.getCurrentPack(client.playerId);
-  send(ws, { type: 'pack', payload: { ...pack, picked: room.draft.playerPools.get(client.playerId)?.length || 0 } });
+  if (!pack) return;
+  const payload = { ...pack, picked: room.draft.playerPools.get(client.playerId)?.length || 0 };
+  send(ws, { type: 'pack', payload });
+  logRoomEvent(roomId, 'pack_sent', {
+    reason: 'client_request',
+    player: summarizePlayer(room.players.find(player => player.id === client.playerId), client),
+    connection: client.connection,
+    draft: summarizeDraft(room),
+    pack: summarizePack(payload),
+  });
 }
 
 function handleGetYdk(ws, { roomId }, rm) {
@@ -521,6 +792,16 @@ function handleSaveDeck(ws, { roomId, deck }, rm) {
   room.playerDecks ||= new Map();
   room.playerDecks.set(client.playerId, normalized);
   room.lastActive = Date.now();
+  logRoomEvent(client.roomId, 'deck_saved', {
+    player: summarizePlayer(room.players.find(player => player.id === client.playerId), client),
+    connection: client.connection,
+    counts: {
+      main: normalized.main.length,
+      extra: normalized.extra.length,
+      side: normalized.side.length,
+      pool: normalized.pool.length,
+    },
+  });
 }
 
 function normalizeSavedDeck(deck, ownedPool) {
@@ -552,11 +833,37 @@ function countCards(cards) {
   return counts;
 }
 
+function parseYdkCountsForLog(content) {
+  const counts = { main: 0, extra: 0, side: 0 };
+  let section = 'main';
+  for (const line of String(content || '').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('#extra')) { section = 'extra'; continue; }
+    if (trimmed.startsWith('!side') || trimmed.startsWith('#side')) { section = 'side'; continue; }
+    if (trimmed.startsWith('#') || trimmed.startsWith('!')) continue;
+    const id = parseInt(trimmed, 10);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    counts[section]++;
+  }
+  return counts;
+}
+
 function handleSwapSeat(ws, { roomId, targetSeat }, rm) {
   const client = clients.get(ws);
   if (!client) return;
+  const beforeRoom = rm.getRoom(roomId);
+  const beforePlayer = beforeRoom?.players?.find(player => player.id === client.playerId);
+  const fromSeat = beforePlayer?.seatIndex ?? null;
   const result = rm.swapSeats(roomId, client.playerId, targetSeat);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  const player = result.room?.players?.find(p => p.id === client.playerId);
+  logRoomEvent(roomId, 'seat_swapped', {
+    player: summarizePlayer(player, client),
+    connection: client.connection,
+    fromSeat,
+    toSeat: player?.seatIndex ?? targetSeat,
+  });
   broadcast(roomId, rm, null, { type: 'room_update', payload: { room: rm.getRoomPublic(roomId) } });
 }
 
@@ -577,6 +884,12 @@ function handleLeave(ws, rm) {
   if (currentRoom?.state !== DRAFT_STATES.IDLE) {
     const room = rm.disconnectPlayer(client.roomId, client.playerId);
     if (room) {
+      logRoomEvent(client.roomId, 'player_left_non_idle_marked_disconnected', {
+        player: summarizePlayer(room.players.find(player => player.id === client.playerId), client),
+        connection: client.connection,
+        room: summarizeRoom(room),
+        draft: summarizeDraft(room),
+      });
       broadcast(client.roomId, rm, null, {
         type: 'room_update',
         payload: { room: rm.getRoomPublic(client.roomId) },
@@ -590,6 +903,11 @@ function handleLeave(ws, rm) {
     return;
   }
 
+  logRoomEvent(client.roomId, 'player_left', {
+    player: summarizePlayer(currentRoom?.players?.find(player => player.id === client.playerId), client),
+    connection: client.connection,
+    room: summarizeRoom(currentRoom),
+  });
   const room = rm.removePlayer(client.roomId, client.playerId);
   if (room) {
     broadcast(client.roomId, rm, null, {
@@ -607,6 +925,12 @@ function handleBattleCreate(ws, { roomId }, rm) {
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: 'Room not found' } });
   const tables = getOrCreateBattleTables(room);
+  const client = clients.get(ws);
+  logRoomEvent(roomId, 'battle_tables_ready', {
+    player: client ? summarizePlayer(room.players.find(p => p.id === client.playerId), client) : null,
+    connection: client?.connection || null,
+    tables,
+  });
   const payload = { tables };
   // Emit both names for compatibility: older clients listen for
   // battle_tables_ready while newer code may expect battle_tables_created.
@@ -622,6 +946,12 @@ function handleDuelJoin(ws, { tableId, seatIndex }) {
   }
   const result = duelManagerRef.joinTable(tableId, client.playerId, seatIndex);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  logRoomEvent(client.roomId, 'battle_table_joined', {
+    player: summarizePlayer(null, client),
+    connection: client.connection,
+    table: summarizeBattleTable(tableId),
+    seatIndex,
+  });
   broadcastRoomBattleTables(client.roomId);
 }
 
@@ -633,6 +963,11 @@ function handleDuelLeave(ws, { tableId }) {
   }
   const result = duelManagerRef.leaveTable(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  logRoomEvent(client.roomId, 'battle_table_left', {
+    player: summarizePlayer(null, client),
+    connection: client.connection,
+    table: summarizeBattleTable(tableId),
+  });
   broadcastRoomBattleTables(client.roomId);
 }
 
@@ -644,6 +979,11 @@ function handleDuelRematch(ws, { tableId }) {
   }
   const result = duelManagerRef.rematchTable(tableId, client.playerId);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  logRoomEvent(client.roomId, 'battle_table_rematch', {
+    player: summarizePlayer(null, client),
+    connection: client.connection,
+    table: summarizeBattleTable(tableId),
+  });
   broadcastRoomBattleTables(client.roomId);
 }
 
@@ -656,6 +996,15 @@ async function handleDuelSubmit(ws, { tableId, ydkContent }, rm) {
   const room = rm.getRoom(client.roomId);
   const result = duelManagerRef.submitDeck(tableId, client.playerId, ydkContent, room);
   if (result.error) return send(ws, { type: 'error', payload: { message: result.error } });
+  const counts = parseYdkCountsForLog(ydkContent);
+  logRoomEvent(client.roomId, 'battle_deck_submitted', {
+    player: summarizePlayer(room?.players?.find(p => p.id === client.playerId), client),
+    connection: client.connection,
+    table: summarizeBattleTable(tableId),
+    counts,
+    bothReady: result.bothReady === true,
+    justBecameReady: result.justBecameReady === true,
+  });
   send(ws, { type: 'duel_deck_submitted', payload: { success: true, bothReady: result.bothReady } });
   broadcastRoomBattleTables(client.roomId);
 
@@ -673,6 +1022,11 @@ async function launchNeosDuel(tableId, roomId) {
 
   const deckValidationError = validateNeosDecks(tableDecks);
   if (deckValidationError) {
+    logRoomEvent(roomId, 'duel_launch_failed', {
+      table: summarizeBattleTable(tableId),
+      error: deckValidationError,
+      phase: 'deck_validation',
+    });
     sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: { error: deckValidationError },
@@ -682,6 +1036,11 @@ async function launchNeosDuel(tableId, roomId) {
 
   const scriptValidationError = validateNeosDeckScripts(tableDecks);
   if (scriptValidationError) {
+    logRoomEvent(roomId, 'duel_launch_failed', {
+      table: summarizeBattleTable(tableId),
+      error: scriptValidationError,
+      phase: 'script_validation',
+    });
     sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: { error: scriptValidationError },
@@ -710,6 +1069,18 @@ async function launchNeosDuel(tableId, roomId) {
     console.log(`[launchNeosDuel] Room "${passWd}" created for table ${tableId}`);
 
     duelManagerRef.markTableDueling(tableId, { passWd });
+    logRoomEvent(roomId, 'duel_launched', {
+      table: summarizeBattleTable(tableId),
+      passWd,
+      players: tableDecks.players.map(player => ({
+        id: player.id,
+        deck: {
+          main: player.deck?.main?.length || 0,
+          extra: player.deck?.extra?.length || 0,
+          side: player.deck?.side?.length || 0,
+        },
+      })),
+    });
     broadcastRoomBattleTables(roomId);
 
     sendDuelToTablePlayers(tableId, {
@@ -725,6 +1096,11 @@ async function launchNeosDuel(tableId, roomId) {
     });
   } catch (e) {
     console.error('[launchNeosDuel] Failed:', e.message);
+    logRoomEvent(roomId, 'duel_launch_failed', {
+      table: summarizeBattleTable(tableId),
+      error: e.message,
+      phase: 'launch',
+    });
     sendDuelToTablePlayers(tableId, {
       type: 'duel_launch_neos',
       payload: { error: '启动对战房间失败: ' + e.message },

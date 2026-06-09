@@ -11,6 +11,7 @@ import { duelBridge } from './duel-bridge/index.js';
 import { createWSServer } from './ws/index.js';
 import { registerPreloadedDecks } from './duel-bridge/ygopro-ws.js';
 import { getCardScriptStatus } from './duel-bridge/card-script-status.js';
+import { getConnectionInfo, logRoomEvent } from './draft-log/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.join(__dirname, '..', '..', 'client', 'src');
@@ -32,6 +33,8 @@ const YGO_SCRIPT_PATH = resolveExistingPath(
 );
 
 const PORT = process.env.PORT || 3131;
+const MAX_ROOM_PLAYERS = 12;
+const MAX_PACKS_PER_PLAYER = 8;
 
 function resolveExistingPath(...candidates) {
   const usable = candidates.filter(Boolean).map((candidate) => path.resolve(candidate));
@@ -156,12 +159,35 @@ async function main() {
     const cube = cubeManager.getCube(cubeName);
     if (!cube) return res.status(404).json({ error: 'Cube not found' });
 
-    const maxP = Math.min(maxPlayers || 8, 16);
-    const ppp = Math.max(packsPerPlayer || 3, 1);
-    const cpp = Math.max(cardsPerPack || 15, 5);
+    const maxP = parseRoomInt(maxPlayers, 8);
+    const ppp = parseRoomInt(packsPerPlayer, 3);
+    const cpp = parseRoomInt(cardsPerPack, 15);
+    if (maxP < 2 || maxP > MAX_ROOM_PLAYERS) {
+      return res.status(400).json({ error: `玩家数必须为 2-${MAX_ROOM_PLAYERS} 人` });
+    }
+    if (ppp < 1 || ppp > MAX_PACKS_PER_PLAYER) {
+      return res.status(400).json({ error: `每人包数必须为 1-${MAX_PACKS_PER_PLAYER} 包` });
+    }
+    if (cpp < 5) {
+      return res.status(400).json({ error: '每包张数至少为 5 张' });
+    }
+    const requiredCards = maxP * ppp * cpp;
+    if (cube.count < requiredCards) {
+      return res.status(400).json({
+        code: 'CUBE_TOO_SMALL',
+        error: `Cube 牌数不足：${cube.name} 只有 ${cube.count} 张，当前设置需要 ${requiredCards} 张（${maxP} 人 x ${ppp} 包 x ${cpp} 张）。请减少玩家数、每人包数或每包张数。`,
+      });
+    }
 
     const finalRoomName = String(roomName || '').trim() || `${String(playerName).trim()}的房间`;
     const room = roomManager.createRoom(cubeName, cube.cardIds, maxP, ppp, cpp, password || null, testMode === true, finalRoomName);
+    logRoomEvent(room.id, 'room_created', {
+      room: summarizeRoomForLog(room),
+      creator: {
+        name: String(playerName).trim(),
+        connection: getConnectionInfo(req),
+      },
+    });
     res.json({ roomId: room.id, roomName: room.name, playerName, hasPassword: !!password });
   });
 
@@ -366,6 +392,24 @@ main().catch(err => {
 });
 
 // ── YDK parser ────────────────────────────────
+
+function parseRoomInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function summarizeRoomForLog(room) {
+  return {
+    id: room.id,
+    name: room.name,
+    cubeName: room.cubeName,
+    maxPlayers: room.maxPlayers,
+    packsPerPlayer: room.packsPerPlayer,
+    cardsPerPack: room.cardsPerPack,
+    testMode: room.testMode === true,
+    hasPassword: Boolean(room.password),
+  };
+}
 
 /**
  * Parse YDK format into { main, extra }.

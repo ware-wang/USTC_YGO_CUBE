@@ -5,6 +5,9 @@
 
 /* ======================== DOM UTILS ======================== */
 const el = (id) => document.getElementById(id);
+const MAX_PLAYERS = 12;
+const MAX_PACKS_PER_PLAYER = 8;
+let cubeCounts = new Map();
 
 function show(e) { e?.classList.remove('hidden'); }
 function hide(e) { e?.classList.add('hidden'); }
@@ -33,9 +36,23 @@ async function loadCubes() {
   if (!sel) return;
   const data = await apiGet('/api/cubes');
   const cubes = data.cubes || [];
-  sel.innerHTML = cubes.length
-    ? cubes.map(c => '<option value="' + c.name + '">' + c.name + ' (' + c.count + '张)</option>').join('')
-    : '<option value="">没有可用Cube</option>';
+  cubeCounts = new Map(cubes.map(c => [String(c.name), Number(c.count) || 0]));
+  sel.innerHTML = '';
+  if (!cubes.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '没有可用Cube';
+    sel.appendChild(opt);
+    return;
+  }
+  for (const cube of cubes) {
+    const count = Number(cube.count) || 0;
+    const opt = document.createElement('option');
+    opt.value = cube.name;
+    opt.dataset.count = String(count);
+    opt.textContent = cube.name + ' (' + count + '张)';
+    sel.appendChild(opt);
+  }
 }
 
 async function loadRooms() {
@@ -111,18 +128,53 @@ async function handleCreate() {
   if (!roomName) return showError('请输入房间名');
   if (!cube) return showError('请选择Cube');
 
+  const maxPlayers = readInt('maxPlayers', 4);
+  const packsPerPlayer = readInt('packsPerPlayer', 4);
+  const cardsPerPack = readInt('cardsPerPack', 15);
+  const capacityError = getCapacityError(cube, maxPlayers, packsPerPlayer, cardsPerPack);
+  if (capacityError) {
+    alert(capacityError);
+    return showError(capacityError);
+  }
+
   const data = await apiPost('/api/rooms', {
     playerName: name,
     roomName,
     cubeName: cube,
-    maxPlayers: parseInt(el('maxPlayers').value),
-    packsPerPlayer: parseInt(el('packsPerPlayer').value),
-    cardsPerPack: parseInt(el('cardsPerPack').value),
+    maxPlayers,
+    packsPerPlayer,
+    cardsPerPack,
     password: password || undefined,
     testMode: el('testMode').checked,
   });
+  if (data.code === 'CUBE_TOO_SMALL') alert(data.error);
   if (data.error) return showError(data.error);
   redirectToRoom(data.roomId, name, password);
+}
+
+function readInt(id, fallback) {
+  const parsed = parseInt(el(id)?.value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getSelectedCubeCount(cubeName) {
+  const selected = el('cubeSelect')?.selectedOptions?.[0];
+  const fromOption = Number(selected?.dataset?.count);
+  if (Number.isFinite(fromOption) && fromOption > 0) return fromOption;
+  return cubeCounts.get(String(cubeName)) || 0;
+}
+
+function getCapacityError(cubeName, maxPlayers, packsPerPlayer, cardsPerPack) {
+  if (maxPlayers > MAX_PLAYERS) return '玩家数最多 ' + MAX_PLAYERS + ' 人';
+  if (packsPerPlayer > MAX_PACKS_PER_PLAYER) return '每人包数最多 ' + MAX_PACKS_PER_PLAYER + ' 包';
+  const cubeCount = getSelectedCubeCount(cubeName);
+  const needed = maxPlayers * packsPerPlayer * cardsPerPack;
+  if (cubeCount > 0 && needed > cubeCount) {
+    return 'Cube 牌数不足：当前 Cube 只有 ' + cubeCount + ' 张，当前设置需要 ' +
+      needed + ' 张（' + maxPlayers + ' 人 x ' + packsPerPlayer + ' 包 x ' +
+      cardsPerPack + ' 张）。请减少玩家数、每人包数或每包张数。';
+  }
+  return '';
 }
 
 async function handleJoin() {
