@@ -20,6 +20,7 @@ const DRAFT_PICK_TIMEOUT_MS = parseInt(process.env.DRAFT_PICK_TIMEOUT_MS || '600
 const DRAFT_DISCONNECT_GRACE_MS = parseInt(process.env.DRAFT_DISCONNECT_GRACE_MS || '60000', 10);
 const draftRoundTimers = new Map();
 const draftDisconnectTimers = new Map();
+const flipTurnTimers = new Map();
 
 let duelManagerRef = null;
 let duelBridgeRef = null;
@@ -32,6 +33,7 @@ export function createWSServer(httpServer, roomManager, duelManager, duelBridge,
   roomManager.onRoomDeleted?.((room, reason) => {
     clearDraftRoundTimer(room.id);
     clearRoomDisconnectedDraftPicks(room.id);
+    clearFlipTurnTimer(room.id);
     logRoomEvent(room.id, 'room_deleted', {
       reason: reason || null,
       room: summarizeRoom(room),
@@ -116,6 +118,9 @@ function handleMessage(ws, msg, roomManager) {
     case 'start_draft': return handleStart(ws, payload, roomManager);
     case 'confirm_pick': return handleConfirmPick(ws, payload, roomManager);
     case 'get_pack': return handleGetPack(ws, payload, roomManager);
+    case 'flip_buy_card': return handleFlipBuyCard(ws, payload, roomManager);
+    case 'flip_pass_turn': return handleFlipPassTurn(ws, payload, roomManager);
+    case 'flip_get_state': return handleFlipGetState(ws, payload, roomManager);
     case 'get_ydk': return handleGetYdk(ws, payload, roomManager);
     case 'save_deck': return handleSaveDeck(ws, payload, roomManager);
     case 'leave_room': return handleLeave(ws, roomManager);
@@ -186,6 +191,9 @@ function summarizeRoom(room) {
     maxPlayers: room.maxPlayers,
     packsPerPlayer: room.packsPerPlayer,
     cardsPerPack: room.cardsPerPack,
+    draftMode: room.draftMode || 'classic',
+    flipTargetCards: room.flipTargetCards || null,
+    flipMarketRowSize: room.flipMarketRowSize || null,
     testMode: room.testMode === true,
   };
 }
@@ -193,7 +201,28 @@ function summarizeRoom(room) {
 function summarizeDraft(room) {
   const draft = room?.draft;
   if (!draft) return null;
+  if (room?.draftMode === 'flip') {
+    const activePlayer = draft.getActivePlayer?.();
+    return {
+      mode: 'flip',
+      state: draft.state,
+      turnNumber: draft.turnNumber,
+      pickRound: draft.pickRound,
+      activePlayerId: activePlayer?.id || null,
+      activePlayerName: activePlayer?.name || null,
+      remainingFunds: draft.remainingFunds,
+      turnBoughtCount: draft.turnBoughtCount || 0,
+      turnFunds: draft.turnFunds,
+      targetCards: draft.targetCards,
+      rowSize: draft.rowSize,
+      drawRemaining: draft.drawPile?.length || 0,
+      trashCount: draft.trash?.length || 0,
+      cubeExhausted: draft.cubeExhausted === true,
+      totalPlayers: draft.players?.length || room?.players?.length || 0,
+    };
+  }
   return {
+    mode: 'classic',
     state: draft.state,
     packIndex: draft.packIndex,
     totalPacks: draft.packsPerPlayer,
@@ -211,6 +240,8 @@ function summarizeCard(card) {
     name: card.name || null,
     type: card.type || 0,
     packSlot: Number.isInteger(card.packSlot) ? card.packSlot : null,
+    marketSlot: Number.isInteger(card.marketSlot) ? card.marketSlot : null,
+    cost: Number.isInteger(card.cost) ? card.cost : null,
   };
 }
 
@@ -359,6 +390,14 @@ function isDraftingRoom(room) {
   return room?.state === DRAFT_STATES.DRAFTING && room.draft?.state === DRAFT_STATES.DRAFTING;
 }
 
+function isClassicDraftingRoom(room) {
+  return isDraftingRoom(room) && (room.draftMode || 'classic') === 'classic';
+}
+
+function isFlipDraftingRoom(room) {
+  return isDraftingRoom(room) && room.draftMode === 'flip';
+}
+
 function draftDisconnectKey(roomId, playerId) {
   return `${roomId}:${playerId}`;
 }
@@ -385,6 +424,12 @@ function clearRoomDisconnectedDraftPicks(roomId) {
   }
 }
 
+function clearFlipTurnTimer(roomId) {
+  const timer = flipTurnTimers.get(roomId);
+  if (timer) clearTimeout(timer.timeout);
+  flipTurnTimers.delete(roomId);
+}
+
 function closeRoomClients(roomId, reason) {
   for (const [ws, c] of clients) {
     if (c.roomId !== roomId) continue;
@@ -396,9 +441,104 @@ function closeRoomClients(roomId, reason) {
   }
 }
 
+function scheduleFlipTurnTimer(roomId, rm, room = null) {
+  room = room || rm.getRoom(roomId);
+  if (!isFlipDraftingRoom(room)) return;
+
+  clearFlipTurnTimer(roomId);
+  const activePlayer = room.draft.getActivePlayer?.();
+  if (!activePlayer) return;
+
+  const turnNumber = room.draft.turnNumber;
+  const pickRound = room.draft.pickRound;
+  const activePlayerId = activePlayer.id;
+  const elapsedMs = room.draft.turnStartedAt ? Date.now() - room.draft.turnStartedAt : 0;
+  const delayMs = Math.max(0, DRAFT_PICK_TIMEOUT_MS - elapsedMs);
+  const timeout = setTimeout(() => {
+    flipTurnTimers.delete(roomId);
+    autoPassFlipTurn(roomId, rm, turnNumber, pickRound, activePlayerId, 'timeout');
+  }, delayMs);
+  timeout.unref?.();
+  flipTurnTimers.set(roomId, { timeout, turnNumber, pickRound, activePlayerId });
+}
+
+function autoPassFlipTurn(roomId, rm, turnNumber, pickRound, activePlayerId, reason) {
+  const room = rm.getRoom(roomId);
+  if (!isFlipDraftingRoom(room)) return;
+  if (room.draft.turnNumber !== turnNumber || room.draft.pickRound !== pickRound) return;
+  const activePlayer = room.draft.getActivePlayer?.();
+  if (!activePlayer || activePlayer.id !== activePlayerId) return;
+
+  const stateBefore = room.draft.getPublicState(activePlayerId, { turnTimeoutMs: DRAFT_PICK_TIMEOUT_MS });
+  const affordableCards = (stateBefore.market?.rows || [])
+    .flatMap(row => row.cards || [])
+    .filter(card => card.cost <= stateBefore.remainingFunds);
+  if (affordableCards.length > 0) {
+    const card = affordableCards[Math.floor(Math.random() * affordableCards.length)];
+    const result = room.draft.buyCard(activePlayerId, card.marketSlot, card.id);
+    if (result.error) {
+      logRoomEvent(roomId, 'flip_auto_buy_failed', {
+        reason,
+        error: result.error,
+        player: summarizePlayer(room.players.find(p => p.id === activePlayerId)),
+        draft: summarizeDraft(room),
+        state: summarizeFlipState(stateBefore),
+        card: summarizeCard(card),
+      });
+      return;
+    }
+
+    room.lastActive = Date.now();
+    logRoomEvent(roomId, 'flip_card_bought', {
+      automatic: true,
+      reason,
+      player: summarizePlayer(room.players.find(p => p.id === activePlayerId)),
+      draft: summarizeDraft(room),
+      card: summarizeCard(card),
+      result: {
+        pickedCardId: result.pickedCardId,
+        spent: result.spent,
+        remainingFunds: result.remainingFunds,
+        turnAdvanced: result.turnAdvanced === true,
+        marketRefreshed: result.marketRefreshed === true,
+        draftComplete: result.draftComplete === true,
+        picked: result.picked,
+      },
+    });
+    handleFlipAdvanced(roomId, rm, room, result, 'timeout_auto_buy');
+    return;
+  }
+
+  const result = room.draft.passTurn(activePlayerId);
+  if (result.error) {
+    logRoomEvent(roomId, 'flip_pass_failed', {
+      automatic: true,
+      reason,
+      error: result.error,
+      player: summarizePlayer(room.players.find(p => p.id === activePlayerId)),
+      draft: summarizeDraft(room),
+    });
+    return;
+  }
+
+  room.lastActive = Date.now();
+  logRoomEvent(roomId, 'flip_turn_passed', {
+    automatic: true,
+    reason,
+    player: summarizePlayer(room.players.find(p => p.id === activePlayerId)),
+    draft: summarizeDraft(room),
+    result: {
+      turnAdvanced: result.turnAdvanced === true,
+      marketRefreshed: result.marketRefreshed === true,
+      draftComplete: result.draftComplete === true,
+    },
+  });
+  handleFlipAdvanced(roomId, rm, room, result);
+}
+
 function scheduleDraftRoundTimer(roomId, rm, room = null) {
   room = room || rm.getRoom(roomId);
-  if (!isDraftingRoom(room)) return;
+  if (!isClassicDraftingRoom(room)) return;
 
   clearDraftRoundTimer(roomId);
   const round = room.draft.pickRound;
@@ -412,7 +552,7 @@ function scheduleDraftRoundTimer(roomId, rm, room = null) {
 
 function scheduleDisconnectedDraftPick(roomId, playerId, rm, room = null) {
   room = room || rm.getRoom(roomId);
-  if (!isDraftingRoom(room)) return;
+  if (!isClassicDraftingRoom(room)) return;
   if (room.draft.confirmedThisRound?.has(playerId)) return;
 
   const player = room.players.find(p => p.id === playerId);
@@ -424,7 +564,7 @@ function scheduleDisconnectedDraftPick(roomId, playerId, rm, room = null) {
   const timeout = setTimeout(() => {
     draftDisconnectTimers.delete(key);
     const currentRoom = rm.getRoom(roomId);
-    if (!isDraftingRoom(currentRoom)) return;
+    if (!isClassicDraftingRoom(currentRoom)) return;
     if (currentRoom.draft.pickRound !== round) return;
     if (currentRoom.draft.confirmedThisRound?.has(playerId)) return;
 
@@ -439,7 +579,7 @@ function scheduleDisconnectedDraftPick(roomId, playerId, rm, room = null) {
 
 function scheduleDisconnectedDraftPicksForRoom(roomId, rm, room = null) {
   room = room || rm.getRoom(roomId);
-  if (!isDraftingRoom(room)) return;
+  if (!isClassicDraftingRoom(room)) return;
   for (const player of room.players) {
     if (player.disconnectedAt) scheduleDisconnectedDraftPick(roomId, player.id, rm, room);
   }
@@ -447,7 +587,7 @@ function scheduleDisconnectedDraftPicksForRoom(roomId, rm, room = null) {
 
 function autoPickUnconfirmed(roomId, rm, round, reason) {
   const room = rm.getRoom(roomId);
-  if (!isDraftingRoom(room)) return;
+  if (!isClassicDraftingRoom(room)) return;
   if (room.draft.pickRound !== round) return;
 
   logRoomEvent(roomId, 'auto_pick_unconfirmed_started', {
@@ -569,6 +709,66 @@ function sendCurrentPacks(roomId, room, reason = 'round_advance') {
   }
 }
 
+function sendFlipState(roomId, room, playerId, reason = 'state_update') {
+  const pws = findPlayerWs(roomId, playerId);
+  if (!pws || typeof room.draft.getPublicState !== 'function') return;
+  const client = clients.get(pws);
+  const payload = room.draft.getPublicState(playerId, {
+    turnTimeoutMs: DRAFT_PICK_TIMEOUT_MS,
+  });
+  send(pws, { type: 'flip_state', payload });
+  logRoomEvent(roomId, 'flip_state_sent', {
+    reason,
+    player: summarizePlayer(room.players.find(player => player.id === playerId), client),
+    connection: client?.connection || null,
+    draft: summarizeDraft(room),
+    state: summarizeFlipState(payload),
+  });
+}
+
+function broadcastFlipState(roomId, rm, room, reason = 'state_update') {
+  for (const player of room.players) {
+    sendFlipState(roomId, room, player.id, reason);
+  }
+}
+
+function summarizeFlipState(state) {
+  if (!state) return null;
+  return {
+    activePlayerId: state.activePlayerId,
+    activePlayerName: state.activePlayerName,
+    remainingFunds: state.remainingFunds,
+    turnBoughtCount: state.turnBoughtCount,
+    drawRemaining: state.drawRemaining,
+    trashCount: state.trashCount,
+    cubeExhausted: state.cubeExhausted === true,
+    picked: state.picked,
+    rows: (state.market?.rows || []).map(row => ({
+      cost: row.cost,
+      count: row.cards?.length || 0,
+      cards: (row.cards || []).map(summarizeCard),
+    })),
+    progress: state.playerProgress || [],
+  };
+}
+
+function buildDraftStartedPayload(room) {
+  if (room?.draftMode === 'flip') {
+    return {
+      mode: 'flip',
+      targetCards: room.flipTargetCards || room.draft?.targetCards || 45,
+      rowSize: room.flipMarketRowSize || room.draft?.rowSize || 4,
+      turnFunds: room.draft?.turnFunds || 4,
+    };
+  }
+  return {
+    mode: 'classic',
+    totalRounds: room?.packsPerPlayer,
+    totalPacks: room?.packsPerPlayer,
+    cardsPerPack: room?.cardsPerPack,
+  };
+}
+
 function handleDraftAdvanced(roomId, rm, room, result) {
   clearDraftRoundTimer(roomId);
   clearRoomDisconnectedDraftPicks(roomId);
@@ -584,7 +784,7 @@ function handleDraftAdvanced(roomId, rm, room, result) {
     });
     broadcast(roomId, rm, null, {
       type: 'draft_complete',
-      payload: { pools: room.draft.getPlayerPools(), tables },
+      payload: { mode: room.draftMode || 'classic', pools: room.draft.getPlayerPools(), tables },
     });
     return;
   }
@@ -596,6 +796,33 @@ function handleDraftAdvanced(roomId, rm, room, result) {
   broadcast(roomId, rm, null, { type: 'round_update', payload: { packIndex: room.draft.packIndex, totalPacks: room.draft.packsPerPlayer, direction: room.draft.direction } });
   scheduleDraftRoundTimer(roomId, rm, room);
   scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
+}
+
+function handleFlipAdvanced(roomId, rm, room, result, reason = 'state_update') {
+  clearFlipTurnTimer(roomId);
+  room.lastActive = Date.now();
+
+  if (result.draftComplete) {
+    room.state = DRAFT_STATES.COMPLETE;
+    const tables = getOrCreateBattleTables(room);
+    logRoomEvent(roomId, 'draft_completed', {
+      draft: summarizeDraft(room),
+      pools: summarizePools(room),
+      tables,
+    });
+    broadcast(roomId, rm, null, {
+      type: 'draft_complete',
+      payload: { mode: room.draftMode || 'classic', pools: room.draft.getPlayerPools(), tables },
+    });
+    return;
+  }
+
+  logRoomEvent(roomId, 'flip_turn_updated', {
+    reason,
+    draft: summarizeDraft(room),
+  });
+  broadcastFlipState(roomId, rm, room, reason);
+  scheduleFlipTurnTimer(roomId, rm, room);
 }
 
 // ── Room / Draft handlers ────────────────────
@@ -638,23 +865,32 @@ function handleJoin(ws, { roomId, playerName, password }, rm) {
   broadcast(roomId, rm, ws, { type: 'room_update', payload: { room: rm.getRoomPublic(roomId) } });
 
   if (isDraftingRoom(room)) {
-    send(ws, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
-    const pack = room.draft.getCurrentPack(player.id);
-    if (pack) {
-      send(ws, { type: 'pack', payload: pack });
-      logRoomEvent(room.id, 'pack_sent', {
-        reason: 'join_during_draft',
-        player: summarizePlayer(player),
-        connection,
-        draft: summarizeDraft(room),
-        pack: summarizePack(pack),
-      });
+    send(ws, {
+      type: 'draft_started',
+      payload: buildDraftStartedPayload(room),
+    });
+    if (room.draftMode === 'flip') {
+      sendFlipState(room.id, room, player.id, 'join_during_draft');
+      scheduleFlipTurnTimer(room.id, rm, room);
+    } else {
+      const pack = room.draft.getCurrentPack(player.id);
+      if (pack) {
+        send(ws, { type: 'pack', payload: pack });
+        logRoomEvent(room.id, 'pack_sent', {
+          reason: 'join_during_draft',
+          player: summarizePlayer(player),
+          connection,
+          draft: summarizeDraft(room),
+          pack: summarizePack(pack),
+        });
+      }
     }
   } else if (room.state === DRAFT_STATES.COMPLETE || room.draft?.state === DRAFT_STATES.COMPLETE) {
     const tables = getOrCreateBattleTables(room);
     send(ws, {
       type: 'draft_complete',
       payload: {
+        mode: room.draftMode || 'classic',
         pools: room.draft.getPlayerPools(),
         savedDeck: room.playerDecks?.get(player.id) || null,
         tables,
@@ -679,11 +915,16 @@ function handleStart(ws, { roomId }, rm) {
     players: summarizePlayers(room),
     draft: summarizeDraft(room),
   });
-  broadcast(roomId, rm, null, { type: 'draft_started', payload: { totalRounds: room.packsPerPlayer, cardsPerPack: room.cardsPerPack } });
+  broadcast(roomId, rm, null, { type: 'draft_started', payload: buildDraftStartedPayload(room) });
 
-  sendCurrentPacks(roomId, room, 'draft_start');
-  scheduleDraftRoundTimer(roomId, rm, room);
-  scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
+  if (room.draftMode === 'flip') {
+    broadcastFlipState(roomId, rm, room, 'draft_start');
+    scheduleFlipTurnTimer(roomId, rm, room);
+  } else {
+    sendCurrentPacks(roomId, room, 'draft_start');
+    scheduleDraftRoundTimer(roomId, rm, room);
+    scheduleDisconnectedDraftPicksForRoom(roomId, rm, room);
+  }
 }
 
 function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
@@ -692,6 +933,9 @@ function handleConfirmPick(ws, { roomId, cardIndex, cardId }, rm) {
 
   const room = rm.getRoom(roomId);
   if (!room) return send(ws, { type: 'error', payload: { message: '房间不存在' } });
+  if (room.draftMode === 'flip') {
+    return send(ws, { type: 'error', payload: { message: '翻翻乐模式请使用公共池购买' } });
+  }
   const player = room.players.find(p => p.id === client.playerId);
   const draftBefore = summarizeDraft(room);
   const packBefore = room.draft.getCurrentPack(client.playerId);
@@ -754,6 +998,10 @@ function handleGetPack(ws, { roomId }, rm) {
   if (!client) return;
   const room = rm.getRoom(roomId);
   if (!room) return;
+  if (room.draftMode === 'flip') {
+    sendFlipState(roomId, room, client.playerId, 'client_request');
+    return;
+  }
   const pack = room.draft.getCurrentPack(client.playerId);
   if (!pack) return;
   const payload = { ...pack, picked: room.draft.playerPools.get(client.playerId)?.length || 0 };
@@ -765,6 +1013,126 @@ function handleGetPack(ws, { roomId }, rm) {
     draft: summarizeDraft(room),
     pack: summarizePack(payload),
   });
+}
+
+function handleFlipBuyCard(ws, { roomId, marketSlot, cardId }, rm) {
+  const client = clients.get(ws);
+  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (roomId && roomId !== client.roomId) {
+    return send(ws, { type: 'error', payload: { message: '房间不匹配' } });
+  }
+  const room = rm.getRoom(client.roomId);
+  if (!room) return send(ws, { type: 'error', payload: { message: '房间不存在' } });
+  if (room.draftMode !== 'flip') {
+    return send(ws, { type: 'error', payload: { message: '当前房间不是翻翻乐模式' } });
+  }
+
+  const expectedCardId = Number(cardId);
+  if (!Number.isInteger(expectedCardId) || expectedCardId <= 0) {
+    return send(ws, { type: 'error', payload: { message: '客户端版本过旧，请刷新页面后重新选择' } });
+  }
+
+  const draftBefore = summarizeDraft(room);
+  const stateBefore = room.draft.getPublicState(client.playerId, { turnTimeoutMs: DRAFT_PICK_TIMEOUT_MS });
+  const requestedCard = findFlipMarketCard(stateBefore, marketSlot, expectedCardId);
+  const result = room.draft.buyCard(client.playerId, marketSlot, expectedCardId);
+  const player = room.players.find(p => p.id === client.playerId);
+  if (result.error) {
+    logRoomEvent(client.roomId, 'flip_buy_rejected', {
+      error: result.error,
+      player: summarizePlayer(player, client),
+      connection: client.connection,
+      draft: draftBefore,
+      request: { marketSlot, cardId: expectedCardId },
+      requestedCard: summarizeCard(requestedCard),
+      state: summarizeFlipState(stateBefore),
+    });
+    return send(ws, { type: 'error', payload: { message: result.error } });
+  }
+
+  room.lastActive = Date.now();
+  logRoomEvent(client.roomId, 'flip_card_bought', {
+    automatic: false,
+    player: summarizePlayer(player, client),
+    connection: client.connection,
+    draft: draftBefore,
+    request: { marketSlot, cardId: expectedCardId },
+    card: summarizeCard(requestedCard),
+    result: {
+      pickedCardId: result.pickedCardId,
+      spent: result.spent,
+      remainingFunds: result.remainingFunds,
+      turnAdvanced: result.turnAdvanced === true,
+      marketRefreshed: result.marketRefreshed === true,
+      draftComplete: result.draftComplete === true,
+      picked: result.picked,
+    },
+  });
+
+  handleFlipAdvanced(client.roomId, rm, room, result, 'card_bought');
+}
+
+function handleFlipPassTurn(ws, { roomId }, rm) {
+  const client = clients.get(ws);
+  if (!client) return send(ws, { type: 'error', payload: { message: '未加入房间' } });
+  if (roomId && roomId !== client.roomId) {
+    return send(ws, { type: 'error', payload: { message: '房间不匹配' } });
+  }
+  const room = rm.getRoom(client.roomId);
+  if (!room) return send(ws, { type: 'error', payload: { message: '房间不存在' } });
+  if (room.draftMode !== 'flip') {
+    return send(ws, { type: 'error', payload: { message: '当前房间不是翻翻乐模式' } });
+  }
+
+  const draftBefore = summarizeDraft(room);
+  const result = room.draft.passTurn(client.playerId);
+  const player = room.players.find(p => p.id === client.playerId);
+  if (result.error) {
+    logRoomEvent(client.roomId, 'flip_pass_rejected', {
+      error: result.error,
+      player: summarizePlayer(player, client),
+      connection: client.connection,
+      draft: draftBefore,
+    });
+    return send(ws, { type: 'error', payload: { message: result.error } });
+  }
+
+  room.lastActive = Date.now();
+  logRoomEvent(client.roomId, 'flip_turn_passed', {
+    automatic: false,
+    player: summarizePlayer(player, client),
+    connection: client.connection,
+    draft: draftBefore,
+    result: {
+      turnAdvanced: result.turnAdvanced === true,
+      marketRefreshed: result.marketRefreshed === true,
+      draftComplete: result.draftComplete === true,
+    },
+  });
+  handleFlipAdvanced(client.roomId, rm, room, result, 'turn_passed');
+}
+
+function handleFlipGetState(ws, { roomId }, rm) {
+  const client = clients.get(ws);
+  if (!client) return;
+  if (roomId && roomId !== client.roomId) return;
+  const room = rm.getRoom(client.roomId);
+  if (!room || room.draftMode !== 'flip') return;
+  sendFlipState(client.roomId, room, client.playerId, 'client_request');
+}
+
+function findFlipMarketCard(state, marketSlot, fallbackCardId = null) {
+  const slot = Number(marketSlot);
+  const rows = state?.market?.rows || [];
+  for (const row of rows) {
+    const found = (row.cards || []).find(card => card.marketSlot === slot);
+    if (found) return found;
+  }
+  for (const row of rows) {
+    const found = (row.cards || []).find(card => Number(card.id) === Number(fallbackCardId));
+    if (found) return found;
+  }
+  return fallbackCardId ? { id: fallbackCardId } : null;
 }
 
 function handleGetYdk(ws, { roomId }, rm) {

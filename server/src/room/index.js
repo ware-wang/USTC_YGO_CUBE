@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import { DraftEngine, DRAFT_STATES } from '../draft/index.js';
+import { FlipDraftEngine } from '../draft/flip.js';
 
 const EMPTY_ROOM_GRACE_MS = 60_000;
 const CLEANUP_INTERVAL_MS = 15_000;
@@ -18,9 +19,12 @@ export class RoomManager {
     return () => this.roomDeleteListeners.delete(listener);
   }
 
-  createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode, roomName = null) {
+  createRoom(cubeName, cubeCardIds, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode, roomName = null, opts = {}) {
     const id = uuid().slice(0, 8);
-    const draft = new DraftEngine(cubeCardIds);
+    const draftMode = opts.draftMode === 'flip' ? 'flip' : 'classic';
+    const draft = draftMode === 'flip'
+      ? new FlipDraftEngine(cubeCardIds)
+      : new DraftEngine(cubeCardIds);
     const room = {
       id,
       name: sanitizeRoomName(roomName) || `房间 ${id}`,
@@ -33,6 +37,9 @@ export class RoomManager {
       cardsPerPack,
       testMode: testMode === true,
       checkDeckSize: true,
+      draftMode,
+      flipTargetCards: parsePositiveInt(opts.flipTargetCards, 45),
+      flipMarketRowSize: parsePositiveInt(opts.flipMarketRowSize, 4),
       draft,
       playerDecks: new Map(),
       state: DRAFT_STATES.IDLE,
@@ -118,9 +125,17 @@ export class RoomManager {
     if (room.state === DRAFT_STATES.DRAFTING) return { error: '轮抽已开始' };
     if (room.state === DRAFT_STATES.COMPLETE) return { error: '轮抽已结束' };
 
-    room.draft.init(room.players, room.packsPerPlayer, {
-      cardsPerPack: room.cardsPerPack,
-    });
+    if (room.draftMode === 'flip') {
+      room.draft.init(room.players, {
+        targetCards: room.flipTargetCards,
+        rowSize: room.flipMarketRowSize,
+        turnFunds: 4,
+      });
+    } else {
+      room.draft.init(room.players, room.packsPerPlayer, {
+        cardsPerPack: room.cardsPerPack,
+      });
+    }
     room.state = DRAFT_STATES.DRAFTING;
     room.lastActive = Date.now();
     return { success: true };
@@ -196,6 +211,9 @@ export class RoomManager {
       maxPlayers: room.maxPlayers,
       packsPerPlayer: room.packsPerPlayer,
       cardsPerPack: room.cardsPerPack,
+      draftMode: room.draftMode || 'classic',
+      flipTargetCards: room.flipTargetCards || 45,
+      flipMarketRowSize: room.flipMarketRowSize || 4,
       state: room.state,
       chat: (room.chat || []).slice(-50),
     };
@@ -216,6 +234,9 @@ export class RoomManager {
           maxPlayers: room.maxPlayers,
           packsPerPlayer: room.packsPerPlayer,
           cardsPerPack: room.cardsPerPack,
+          draftMode: room.draftMode || 'classic',
+          flipTargetCards: room.flipTargetCards || 45,
+          flipMarketRowSize: room.flipMarketRowSize || 4,
           testMode: room.testMode,
           state: room.state,
           canJoin: room.state === DRAFT_STATES.IDLE && room.players.length < room.maxPlayers,
@@ -263,4 +284,9 @@ function sanitizeRoomName(name) {
 
 function countConnectedPlayers(room) {
   return room.players.filter(player => !player.disconnectedAt).length;
+}
+
+function parsePositiveInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

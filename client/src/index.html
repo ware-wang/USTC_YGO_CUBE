@@ -25,6 +25,11 @@
       <input type="text" id="createPassword" placeholder="留空则不设密码" maxlength="20">
       <label>选择 Cube</label>
       <select id="cubeSelect"><option value="">加载中...</option></select>
+      <label>轮抽模式</label>
+      <select id="draftMode" required>
+        <option value="classic" selected>传统轮抽</option>
+        <option value="flip">翻翻乐</option>
+      </select>
       <div class="row">
         <div>
           <label>玩家数</label>
@@ -37,21 +42,37 @@
             <option value="12">12</option>
           </select>
         </div>
-        <div>
-          <label>每人包数</label>
-          <select id="packsPerPlayer">
-            <option value="1">1</option><option value="2">2</option>
-            <option value="3">3</option><option value="4" selected>4</option>
-            <option value="5">5</option><option value="6">6</option>
-            <option value="7">7</option><option value="8">8</option>
-          </select>
+      </div>
+      <div id="classicOptions" class="mode-options">
+        <div class="row">
+          <div>
+            <label>每人包数</label>
+            <select id="packsPerPlayer">
+              <option value="1">1</option><option value="2">2</option>
+              <option value="3">3</option><option value="4" selected>4</option>
+              <option value="5">5</option><option value="6">6</option>
+              <option value="7">7</option><option value="8">8</option>
+            </select>
+          </div>
+          <div>
+            <label>每包张数</label>
+            <select id="cardsPerPack">
+              <option value="5">5</option><option value="10">10</option>
+              <option value="15" selected>15</option><option value="20">20</option>
+            </select>
+          </div>
         </div>
-        <div>
-          <label>每包张数</label>
-          <select id="cardsPerPack">
-            <option value="5">5</option><option value="10">10</option>
-            <option value="15" selected>15</option><option value="20">20</option>
-          </select>
+      </div>
+      <div id="flipOptions" class="mode-options hidden">
+        <div class="row">
+          <div>
+            <label>目标张数</label>
+            <input type="number" id="flipTargetCards" min="1" max="120" value="45">
+          </div>
+          <div>
+            <label>每行卡数</label>
+            <input type="number" id="flipMarketRowSize" min="1" max="8" value="4">
+          </div>
         </div>
       </div>
       <button id="createBtn" class="btn-primary">创建房间</button>
@@ -108,6 +129,6 @@
   </div>
 </div>
 
-<script type="module" src="app.js?v=9"></script>
+<script type="module" src="app.js?v=10"></script>
 </body>
 </html>

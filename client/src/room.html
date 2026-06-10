@@ -58,8 +58,13 @@
   <div class="draft-layout">
     <div class="draft-main">
       <div id="packArea" class="pack-area"></div>
+      <div id="flipMarket" class="flip-market hidden">
+        <div id="flipProgress" class="flip-progress"></div>
+        <div id="flipMarketRows" class="flip-market-rows"></div>
+      </div>
       <div class="draft-actions">
         <button id="confirmPickBtn" class="btn-primary btn-large hidden">确认选择</button>
+        <button id="flipPassBtn" class="btn-secondary hidden">结束回合</button>
         <button id="autoDraftBtn" class="btn-primary btn-large hidden" style="background:var(--accent)">⚡ 一键自动轮抽</button>
         <button id="stopAutoDraftBtn" class="btn-secondary hidden">停止自动轮抽</button>
         <span id="draftStatus" class="hint"></span>
@@ -161,6 +166,6 @@
   <div id="battleTables" class="battle-tables"></div>
 </div>
 
-<script type="module" src="room.js?v=20"></script>
+<script type="module" src="room.js?v=21"></script>
 </body>
 </html>

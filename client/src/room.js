@@ -29,11 +29,13 @@ const state = {
   isHost: false,
   room: null,
   draft: {
+    mode: 'classic',
     totalPacks: 0, packIndex: 0, currentPack: [], direction: 1,
     timer: null, seconds: 60, phase: 'idle',
     selectedCard: null, selectedCardEl: null, remainingInPack: 0,
     autoDraft: false,
     pickedCards: [],
+    flipState: null,
   },
   results: { main: [], extra: [], side: [], pool: [] },
   cardCache: {},
@@ -141,6 +143,8 @@ function makeCardEl(card, opts) {
   div.className = 'card-item';
   div.dataset.id = card.id;
   if (Number.isInteger(card.packSlot)) div.dataset.packSlot = String(card.packSlot);
+  if (Number.isInteger(card.marketSlot)) div.dataset.marketSlot = String(card.marketSlot);
+  if (Number.isInteger(card.cost)) div.dataset.cost = String(card.cost);
   div.innerHTML = cardHTML(card, opts.small);
 
   if (opts.detailButton) {
@@ -199,7 +203,7 @@ function showCardDetail(card, source) {
 
   // Show/hide pick button based on source
   const pickBtn = el('cardDetailPickBtn');
-  if (source === 'draft' && state.draft.phase === 'choosing') {
+  if (source === 'draft' && state.draft.mode === 'classic' && state.draft.phase === 'choosing') {
     show(pickBtn);
   } else {
     hide(pickBtn);
@@ -287,26 +291,37 @@ function setupHandlers() {
   });
 
   wsClient.on('draft_started', (msg) => {
-    state.draft.totalPacks = msg.payload.totalRounds || msg.payload.totalPacks || 4;
+    const payload = msg.payload || {};
+    const mode = payload.mode === 'flip' ? 'flip' : 'classic';
+    state.draft.mode = mode;
+    state.draft.totalPacks = payload.totalRounds || payload.totalPacks || 4;
     state.draft.phase = 'idle';
     state.draft.selectedCard = null;
     state.draft.selectedCardEl = null;
     state.draft.autoDraft = false;
     state.draft.pickedCards = [];
+    state.draft.flipState = null;
     showView('draft');
-    setText('roundInfo', '第 1/' + state.draft.totalPacks + ' 包');
-    setText('draftDirection', '');
+    setText('roundInfo', mode === 'flip' ? '翻翻乐 目标 ' + (payload.targetCards || 45) + ' 张' : '第 1/' + state.draft.totalPacks + ' 包');
+    setText('draftDirection', mode === 'flip' ? '公共池' : '');
     clear('packArea');
+    clear('flipMarketRows');
+    hide(el('packArea'));
+    hide(el('flipMarket'));
+    if (mode === 'flip') show(el('flipMarket'));
     hide(el('confirmPickBtn'));
+    hide(el('flipPassBtn'));
     hide(el('autoDraftBtn'));
     hide(el('stopAutoDraftBtn'));
-    setText('draftStatus', '准备开始...');
+    setText('confirmPickBtn', mode === 'flip' ? '购买此卡' : '确认选择');
+    setText('draftStatus', mode === 'flip' ? '等待公共池同步...' : '准备开始...');
     show(el('draftStatus'));
     renderDraftPickedCards();
   });
 
   wsClient.on('pack', (msg) => {
     const p = msg.payload;
+    state.draft.mode = 'classic';
     state.draft.packIndex = p.packIndex || 0;
     state.draft.totalPacks = p.totalPacks || state.draft.totalPacks || 4;
     state.draft.currentPack = p.cards || [];
@@ -319,6 +334,10 @@ function setupHandlers() {
     state.draft.selectedCardEl = null;
     cacheCards(state.draft.currentPack);
     setDraftPickedCards(p.pickedCards || []);
+    show(el('packArea'));
+    hide(el('flipMarket'));
+    hide(el('flipPassBtn'));
+    setText('confirmPickBtn', '确认选择');
 
     const isTestMode = state.room?.testMode === true;
 
@@ -359,6 +378,36 @@ function setupHandlers() {
         setTimeout(() => autoPickOne(), 300);
       }
     }
+  });
+
+  wsClient.on('flip_state', (msg) => {
+    const p = msg.payload || {};
+    state.draft.mode = 'flip';
+    state.draft.flipState = p;
+    state.draft.phase = p.isYourTurn ? 'choosing' : 'waiting';
+    state.draft.selectedCard = null;
+    state.draft.selectedCardEl = null;
+    cacheCards((p.market?.rows || []).flatMap(row => row.cards || []));
+    setDraftPickedCards(p.pickedCards || []);
+    show(el('flipMarket'));
+    hide(el('packArea'));
+    hide(el('autoDraftBtn'));
+    hide(el('stopAutoDraftBtn'));
+    hide(el('confirmPickBtn'));
+    setText('confirmPickBtn', '购买此卡');
+    setText('roundInfo', '翻翻乐 ' + (p.picked || 0) + '/' + (p.targetCards || 0) + ' 张');
+    setText('draftDirection', '抽牌堆 ' + (p.drawRemaining ?? 0) + ' / 垃圾堆 ' + (p.trashCount ?? 0));
+
+    if (p.isYourTurn) {
+      show(el('flipPassBtn'));
+      setText('draftStatus', '你的回合：剩余 ' + (p.remainingFunds ?? 0) + ' 费');
+      startTimer(secondsLeftFromFlipState(p));
+    } else {
+      hide(el('flipPassBtn'));
+      setText('draftStatus', '等待 ' + (p.activePlayerName || '其他玩家') + ' 操作');
+      startTimer(secondsLeftFromFlipState(p));
+    }
+    renderFlipMarket();
   });
 
   wsClient.on('pick_result', (msg) => {
@@ -409,6 +458,8 @@ function setupHandlers() {
     state.draft.autoDraft = false;
     hide(el('autoDraftBtn'));
     hide(el('stopAutoDraftBtn'));
+    hide(el('flipPassBtn'));
+    hide(el('confirmPickBtn'));
     const myPool = msg.payload.pools[state.playerId];
     if (myPool) {
       const poolCards = ensureCardInstances(myPool.cards || []);
@@ -438,6 +489,9 @@ function setupHandlers() {
   wsClient.on('error', (msg) => {
     const errMsg = msg.payload?.message || '服务器错误';
     alert(errMsg);
+    if (state.draft.mode === 'flip' && state.roomId) {
+      wsSend('flip_get_state', { roomId: state.roomId });
+    }
     if (state.draft.phase === 'waiting' && state.draft.selectedCardEl) {
       state.draft.selectedCardEl.classList.remove('confirmed');
       state.draft.selectedCardEl.classList.add('selected');
@@ -481,7 +535,10 @@ function updateRoomUI(room) {
   setText('roomNameDisplay', room.name || '轮抽房间');
   setText('roomIdDisplay', room.id);
   setText('roomCubeName', room.cubeName);
-  setText('roomRules', room.players.length + '/' + room.maxPlayers + '人 ' + room.packsPerPlayer + '包 ' + room.cardsPerPack + '张');
+  const rules = room.draftMode === 'flip'
+    ? room.players.length + '/' + room.maxPlayers + '人 翻翻乐 目标' + (room.flipTargetCards || 45) + '张 每行' + (room.flipMarketRowSize || 4) + '张'
+    : room.players.length + '/' + room.maxPlayers + '人 ' + room.packsPerPlayer + '包 ' + room.cardsPerPack + '张';
+  setText('roomRules', rules);
   drawSeats(room);
   updateStartBtn(room);
 }
@@ -610,6 +667,9 @@ function renderPack() {
   const area = el('packArea'), btn = el('confirmPickBtn');
   if (!area) return;
   clear(area);
+  show(area);
+  hide(el('flipMarket'));
+  hide(el('flipPassBtn'));
   hide(btn);
 
   const cards = state.draft.currentPack;
@@ -625,6 +685,64 @@ function renderPack() {
       handleSelectCard(card, cardEl);
     });
     area.appendChild(cardEl);
+  }
+}
+
+function renderFlipMarket() {
+  const market = state.draft.flipState;
+  const rowsEl = el('flipMarketRows');
+  const progressEl = el('flipProgress');
+  if (!rowsEl) return;
+  clear(rowsEl);
+
+  if (progressEl) {
+    clear(progressEl);
+    for (const player of market?.playerProgress || []) {
+      const item = document.createElement('div');
+      item.className = 'flip-progress-item';
+      if (player.id === state.playerId) item.classList.add('you');
+      if (player.id === market.activePlayerId) item.classList.add('active');
+      item.textContent = player.name + ' ' + player.count + '/' + player.target;
+      progressEl.appendChild(item);
+    }
+  }
+
+  const rows = market?.market?.rows || [];
+  if (!rows.length) {
+    rowsEl.appendChild(makeEmptyDeckHint('公共池为空'));
+    return;
+  }
+
+  for (const row of rows) {
+    const rowEl = document.createElement('section');
+    rowEl.className = 'flip-market-row cost-' + row.cost;
+    const header = document.createElement('div');
+    header.className = 'flip-row-header';
+    header.textContent = row.cost + ' 费';
+    const cardsEl = document.createElement('div');
+    cardsEl.className = 'flip-row-cards';
+
+    const slots = Array.isArray(row.slots) ? row.slots : (row.cards || []);
+    for (const card of slots) {
+      if (!card) {
+        const empty = document.createElement('div');
+        empty.className = 'flip-empty-slot';
+        empty.textContent = '空位';
+        cardsEl.appendChild(empty);
+        continue;
+      }
+      const cardEl = makeCardEl(card, { detailButton: true, detailSource: 'draft' });
+      const canBuy = market.isYourTurn && card.cost <= market.remainingFunds && state.draft.phase === 'choosing';
+      if (!canBuy) cardEl.classList.add('disabled');
+      cardEl.addEventListener('click', () => {
+        if (!canBuy) return;
+        handleSelectFlipCard(card, cardEl);
+      });
+      cardsEl.appendChild(cardEl);
+    }
+
+    rowEl.append(header, cardsEl);
+    rowsEl.appendChild(rowEl);
   }
 }
 
@@ -711,6 +829,7 @@ function draftPickedGroupOrder(card) {
 
 function handleSelectCard(card, cardEl) {
   if (state.draft.phase !== 'choosing') return;
+  if (state.draft.mode === 'flip') return handleSelectFlipCard(card, cardEl);
 
   // Deselect previous
   if (state.draft.selectedCardEl) {
@@ -734,7 +853,35 @@ function handleSelectCard(card, cardEl) {
   setText('draftStatus', '已选: ' + card.name + ' — 点击「确认选择」提交');
 }
 
+function handleSelectFlipCard(card, cardEl) {
+  if (state.draft.phase !== 'choosing') return;
+  const flip = state.draft.flipState;
+  if (!flip?.isYourTurn) return;
+  if (!Number.isInteger(card.marketSlot)) return;
+  if (card.cost > flip.remainingFunds) return;
+
+  if (state.draft.selectedCardEl) {
+    state.draft.selectedCardEl.classList.remove('selected');
+  }
+
+  if (state.draft.selectedCard === card) {
+    state.draft.selectedCard = null;
+    state.draft.selectedCardEl = null;
+    hide(el('confirmPickBtn'));
+    setText('draftStatus', '你的回合：剩余 ' + flip.remainingFunds + ' 费');
+    return;
+  }
+
+  state.draft.selectedCard = card;
+  state.draft.selectedCardEl = cardEl;
+  if (cardEl) cardEl.classList.add('selected');
+  setText('confirmPickBtn', '购买此卡');
+  show(el('confirmPickBtn'));
+  setText('draftStatus', '已选: ' + card.name + ' / ' + card.cost + ' 费');
+}
+
 function handleConfirmPick() {
+  if (state.draft.mode === 'flip') return handleConfirmFlipBuy();
   if (state.draft.phase !== 'choosing' || !state.draft.selectedCard) return;
 
   const selected = state.draft.selectedCard;
@@ -754,9 +901,40 @@ function handleConfirmPick() {
   setText('draftStatus', '已确认，等待其他玩家...');
 }
 
-function startTimer() {
+function handleConfirmFlipBuy() {
+  if (state.draft.phase !== 'choosing' || !state.draft.selectedCard) return;
+  const selected = state.draft.selectedCard;
+  if (!Number.isInteger(selected.marketSlot)) return;
+
+  state.draft.phase = 'waiting';
+  wsSend('flip_buy_card', {
+    roomId: state.roomId,
+    marketSlot: selected.marketSlot,
+    cardId: selected.id,
+  });
+
+  if (state.draft.selectedCardEl) {
+    state.draft.selectedCardEl.classList.add('confirmed');
+    state.draft.selectedCardEl.classList.remove('selected');
+  }
+  hide(el('confirmPickBtn'));
+  setText('draftStatus', '购买中...');
+}
+
+function handleFlipPassTurn() {
+  if (state.draft.mode !== 'flip') return;
+  const flip = state.draft.flipState;
+  if (!flip?.isYourTurn) return;
+  state.draft.phase = 'waiting';
+  hide(el('confirmPickBtn'));
+  hide(el('flipPassBtn'));
+  wsSend('flip_pass_turn', { roomId: state.roomId });
+  setText('draftStatus', '正在结束回合...');
+}
+
+function startTimer(initialSeconds) {
   stopTimer();
-  state.draft.seconds = 60;
+  state.draft.seconds = Number.isFinite(initialSeconds) ? Math.max(0, initialSeconds) : 60;
   const tel = el('draftTimer'); if (tel) tel.classList.remove('urgent');
   setText('draftTimer', '剩余 ' + state.draft.seconds + 's');
 
@@ -766,13 +944,27 @@ function startTimer() {
     if (state.draft.seconds <= 10) { const t = el('draftTimer'); if (t) t.classList.add('urgent'); }
     if (state.draft.seconds <= 0) {
       stopTimer();
-      autoPick();
+      if (state.draft.mode === 'flip') {
+        setText('draftTimer', '处理中...');
+        setText('draftStatus', '等待服务器结束当前回合...');
+      } else {
+        autoPick();
+      }
     }
   }, 1000);
 }
 
 function stopTimer() {
   if (state.draft.timer) { clearInterval(state.draft.timer); state.draft.timer = null; }
+}
+
+function secondsLeftFromFlipState(flipState) {
+  const timeoutMs = Number(flipState?.turnTimeoutMs);
+  const startedAt = Number(flipState?.turnStartedAt);
+  if (!Number.isFinite(timeoutMs) || !Number.isFinite(startedAt)) return 60;
+  const serverNow = Number(flipState?.serverNow);
+  const now = Number.isFinite(serverNow) ? serverNow : Date.now();
+  return Math.max(0, Math.ceil((startedAt + timeoutMs - now) / 1000));
 }
 
 function autoPick() {
@@ -1647,6 +1839,7 @@ function bindEvents() {
   el('startBtn')?.addEventListener('click', handleStartDraft);
   el('leaveBtn')?.addEventListener('click', handleLeaveRoom);
   el('confirmPickBtn')?.addEventListener('click', handleConfirmPick);
+  el('flipPassBtn')?.addEventListener('click', handleFlipPassTurn);
   el('autoDraftBtn')?.addEventListener('click', startAutoDraft);
   el('stopAutoDraftBtn')?.addEventListener('click', stopAutoDraft);
   el('exportYdkBtn')?.addEventListener('click', handleExportYdk);

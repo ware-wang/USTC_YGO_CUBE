@@ -7,6 +7,8 @@
 const el = (id) => document.getElementById(id);
 const MAX_PLAYERS = 12;
 const MAX_PACKS_PER_PLAYER = 8;
+const MAX_FLIP_MARKET_ROW_SIZE = 8;
+const MAX_FLIP_TARGET_CARDS = 120;
 let cubeCounts = new Map();
 
 function show(e) { e?.classList.remove('hidden'); }
@@ -84,6 +86,9 @@ function roomRowHTML(room) {
   const playerText = room.connectedCount === room.playerCount
     ? `${room.playerCount}/${room.maxPlayers}人`
     : `${room.connectedCount}/${room.maxPlayers}人在线`;
+  const ruleText = room.draftMode === 'flip'
+    ? `翻翻乐 目标${room.flipTargetCards || 45}张 / 每行${room.flipMarketRowSize || 4}张`
+    : `${room.packsPerPlayer}包 x ${room.cardsPerPack}张`;
   return `
     <div class="room-list-item${room.canJoin ? ' joinable' : ''}"${joinAttrs}>
       <div class="room-list-main">
@@ -92,7 +97,7 @@ function roomRowHTML(room) {
           <span>${h(room.id)}</span>
           <span>${h(room.cubeName)}</span>
           <span>${playerText}</span>
-          <span>${room.packsPerPlayer}包 x ${room.cardsPerPack}张</span>
+          <span>${h(ruleText)}</span>
         </div>
       </div>
       <div class="room-list-tags">
@@ -124,6 +129,7 @@ async function handleCreate() {
   const roomName = el('createRoomName').value.trim();
   const cube = el('cubeSelect').value;
   const password = el('createPassword').value.trim() || null;
+  const draftMode = el('draftMode')?.value === 'flip' ? 'flip' : 'classic';
   if (!name) return showError('请输入昵称');
   if (!roomName) return showError('请输入房间名');
   if (!cube) return showError('请选择Cube');
@@ -131,7 +137,11 @@ async function handleCreate() {
   const maxPlayers = readInt('maxPlayers', 4);
   const packsPerPlayer = readInt('packsPerPlayer', 4);
   const cardsPerPack = readInt('cardsPerPack', 15);
-  const capacityError = getCapacityError(cube, maxPlayers, packsPerPlayer, cardsPerPack);
+  const flipTargetCards = readInt('flipTargetCards', 45);
+  const flipMarketRowSize = readInt('flipMarketRowSize', 4);
+  const capacityError = draftMode === 'flip'
+    ? getFlipCapacityError(cube, maxPlayers, flipTargetCards, flipMarketRowSize)
+    : getCapacityError(cube, maxPlayers, packsPerPlayer, cardsPerPack);
   if (capacityError) {
     alert(capacityError);
     return showError(capacityError);
@@ -144,6 +154,9 @@ async function handleCreate() {
     maxPlayers,
     packsPerPlayer,
     cardsPerPack,
+    draftMode,
+    flipTargetCards,
+    flipMarketRowSize,
     password: password || undefined,
     testMode: el('testMode').checked,
   });
@@ -165,14 +178,35 @@ function getSelectedCubeCount(cubeName) {
 }
 
 function getCapacityError(cubeName, maxPlayers, packsPerPlayer, cardsPerPack) {
+  if (maxPlayers < 2) return '玩家数至少 2 人';
   if (maxPlayers > MAX_PLAYERS) return '玩家数最多 ' + MAX_PLAYERS + ' 人';
+  if (packsPerPlayer < 1) return '每人包数至少 1 包';
   if (packsPerPlayer > MAX_PACKS_PER_PLAYER) return '每人包数最多 ' + MAX_PACKS_PER_PLAYER + ' 包';
+  if (cardsPerPack < 5) return '每包张数至少 5 张';
   const cubeCount = getSelectedCubeCount(cubeName);
   const needed = maxPlayers * packsPerPlayer * cardsPerPack;
   if (cubeCount > 0 && needed > cubeCount) {
     return 'Cube 牌数不足：当前 Cube 只有 ' + cubeCount + ' 张，当前设置需要 ' +
       needed + ' 张（' + maxPlayers + ' 人 x ' + packsPerPlayer + ' 包 x ' +
       cardsPerPack + ' 张）。请减少玩家数、每人包数或每包张数。';
+  }
+  return '';
+}
+
+function getFlipCapacityError(cubeName, maxPlayers, targetCards, rowSize) {
+  if (maxPlayers < 2) return '玩家数至少 2 人';
+  if (maxPlayers > MAX_PLAYERS) return '玩家数最多 ' + MAX_PLAYERS + ' 人';
+  if (targetCards < 1 || targetCards > MAX_FLIP_TARGET_CARDS) {
+    return '翻翻乐目标张数必须为 1-' + MAX_FLIP_TARGET_CARDS + ' 张';
+  }
+  if (rowSize < 1 || rowSize > MAX_FLIP_MARKET_ROW_SIZE) {
+    return '翻翻乐每行卡片数必须为 1-' + MAX_FLIP_MARKET_ROW_SIZE + ' 张';
+  }
+  const cubeCount = getSelectedCubeCount(cubeName);
+  const needed = rowSize * 3;
+  if (cubeCount > 0 && needed > cubeCount) {
+    return 'Cube 牌数不足：当前 Cube 只有 ' + cubeCount + ' 张，翻翻乐公共池初始化需要至少 ' +
+      needed + ' 张（3 行 x 每行 ' + rowSize + ' 张）。';
   }
   return '';
 }
@@ -233,6 +267,7 @@ function handleJoinWithPassword() {
 /* ======================== INIT ======================== */
 function bindEvents() {
   el('createBtn')?.addEventListener('click', handleCreate);
+  el('draftMode')?.addEventListener('change', updateDraftModeOptions);
   el('joinBtn')?.addEventListener('click', handleJoin);
   el('roomCode')?.addEventListener('keydown', (e) => { if (e.key==='Enter') handleJoin(); });
   el('joinPasswordBtn')?.addEventListener('click', handleJoinWithPassword);
@@ -254,10 +289,22 @@ function bindEvents() {
 
 function init() {
   bindEvents();
+  updateDraftModeOptions();
   loadCubes();
   loadRooms();
   setInterval(loadRooms, 5000);
   console.log('[Lobby] Ready');
+}
+
+function updateDraftModeOptions() {
+  const mode = el('draftMode')?.value === 'flip' ? 'flip' : 'classic';
+  if (mode === 'flip') {
+    hide(el('classicOptions'));
+    show(el('flipOptions'));
+  } else {
+    show(el('classicOptions'));
+    hide(el('flipOptions'));
+  }
 }
 
 if (document.readyState === 'loading') {

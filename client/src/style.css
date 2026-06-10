@@ -421,6 +421,93 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   min-height: 360px;
   padding: 14px;
 }
+.flip-market {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-height: 360px;
+  padding: 14px;
+}
+.flip-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.flip-progress-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 9px;
+}
+.flip-progress-item.you {
+  border-color: var(--green);
+  color: var(--green);
+}
+.flip-progress-item.active {
+  background: rgba(88,166,255,0.14);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.flip-market-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.flip-market-row {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  min-height: 150px;
+  overflow: hidden;
+}
+.flip-row-header {
+  align-items: center;
+  background: var(--bg-hover);
+  border-right: 1px solid var(--border);
+  color: var(--text);
+  display: flex;
+  font-size: 0.95rem;
+  font-weight: 800;
+  justify-content: center;
+  padding: 10px;
+  text-align: center;
+}
+.flip-market-row.cost-3 .flip-row-header { color: var(--yellow); }
+.flip-market-row.cost-2 .flip-row-header { color: var(--accent); }
+.flip-market-row.cost-1 .flip-row-header { color: var(--green); }
+.flip-row-cards {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  padding: 10px;
+}
+.flip-row-cards .card-item.disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.flip-row-cards .card-item.disabled:hover {
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+}
+.flip-empty-slot {
+  align-items: center;
+  aspect-ratio: 421 / 614;
+  background: rgba(13,17,23,0.55);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  display: flex;
+  font-size: 0.82rem;
+  justify-content: center;
+  min-height: 170px;
+}
 .draft-actions {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -881,6 +968,12 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   }
   .draft-layout { grid-template-columns: 1fr; }
   .draft-picks-panel { position: static; max-height: none; }
+  .flip-market-row { grid-template-columns: 1fr; }
+  .flip-row-header {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    justify-content: flex-start;
+  }
   .card-detail {
     grid-template-columns: 1fr;
     max-width: 420px;

@@ -35,6 +35,8 @@ const YGO_SCRIPT_PATH = resolveExistingPath(
 const PORT = process.env.PORT || 3131;
 const MAX_ROOM_PLAYERS = 12;
 const MAX_PACKS_PER_PLAYER = 8;
+const MAX_FLIP_MARKET_ROW_SIZE = 8;
+const MAX_FLIP_TARGET_CARDS = 120;
 
 function resolveExistingPath(...candidates) {
   const usable = candidates.filter(Boolean).map((candidate) => path.resolve(candidate));
@@ -152,35 +154,71 @@ async function main() {
 
   // Create room
   app.post('/api/rooms', (req, res) => {
-    const { playerName, roomName, cubeName, maxPlayers, packsPerPlayer, cardsPerPack, password, testMode } = req.body;
+    const {
+      playerName,
+      roomName,
+      cubeName,
+      maxPlayers,
+      packsPerPlayer,
+      cardsPerPack,
+      password,
+      testMode,
+      draftMode: rawDraftMode,
+      flipTargetCards,
+      flipMarketRowSize,
+    } = req.body;
     if (!playerName || !cubeName) {
       return res.status(400).json({ error: 'playerName and cubeName required' });
     }
     const cube = cubeManager.getCube(cubeName);
     if (!cube) return res.status(404).json({ error: 'Cube not found' });
 
+    const draftMode = rawDraftMode === 'flip' ? 'flip' : 'classic';
     const maxP = parseRoomInt(maxPlayers, 8);
     const ppp = parseRoomInt(packsPerPlayer, 3);
     const cpp = parseRoomInt(cardsPerPack, 15);
     if (maxP < 2 || maxP > MAX_ROOM_PLAYERS) {
       return res.status(400).json({ error: `玩家数必须为 2-${MAX_ROOM_PLAYERS} 人` });
     }
-    if (ppp < 1 || ppp > MAX_PACKS_PER_PLAYER) {
-      return res.status(400).json({ error: `每人包数必须为 1-${MAX_PACKS_PER_PLAYER} 包` });
-    }
-    if (cpp < 5) {
-      return res.status(400).json({ error: '每包张数至少为 5 张' });
-    }
-    const requiredCards = maxP * ppp * cpp;
-    if (cube.count < requiredCards) {
-      return res.status(400).json({
-        code: 'CUBE_TOO_SMALL',
-        error: `Cube 牌数不足：${cube.name} 只有 ${cube.count} 张，当前设置需要 ${requiredCards} 张（${maxP} 人 x ${ppp} 包 x ${cpp} 张）。请减少玩家数、每人包数或每包张数。`,
-      });
+
+    let flipTarget = parseRoomInt(flipTargetCards, 45);
+    let flipRowSize = parseRoomInt(flipMarketRowSize, 4);
+    if (draftMode === 'flip') {
+      if (flipTarget < 1 || flipTarget > MAX_FLIP_TARGET_CARDS) {
+        return res.status(400).json({ error: `翻翻乐目标张数必须为 1-${MAX_FLIP_TARGET_CARDS} 张` });
+      }
+      if (flipRowSize < 1 || flipRowSize > MAX_FLIP_MARKET_ROW_SIZE) {
+        return res.status(400).json({ error: `翻翻乐每行卡片数必须为 1-${MAX_FLIP_MARKET_ROW_SIZE} 张` });
+      }
+      const requiredCards = flipRowSize * 3;
+      if (cube.count < requiredCards) {
+        return res.status(400).json({
+          code: 'CUBE_TOO_SMALL',
+          error: `Cube 牌数不足：${cube.name} 只有 ${cube.count} 张，翻翻乐公共池初始化需要至少 ${requiredCards} 张（3 行 x 每行 ${flipRowSize} 张）。`,
+        });
+      }
+    } else {
+      if (ppp < 1 || ppp > MAX_PACKS_PER_PLAYER) {
+        return res.status(400).json({ error: `每人包数必须为 1-${MAX_PACKS_PER_PLAYER} 包` });
+      }
+      if (cpp < 5) {
+        return res.status(400).json({ error: '每包张数至少为 5 张' });
+      }
+      const requiredCards = maxP * ppp * cpp;
+      if (cube.count < requiredCards) {
+        return res.status(400).json({
+          code: 'CUBE_TOO_SMALL',
+          error: `Cube 牌数不足：${cube.name} 只有 ${cube.count} 张，当前设置需要 ${requiredCards} 张（${maxP} 人 x ${ppp} 包 x ${cpp} 张）。请减少玩家数、每人包数或每包张数。`,
+        });
+      }
     }
 
     const finalRoomName = String(roomName || '').trim() || `${String(playerName).trim()}的房间`;
-    const room = roomManager.createRoom(cubeName, cube.cardIds, maxP, ppp, cpp, password || null, testMode === true, finalRoomName);
+    const room = roomManager.createRoom(cubeName, cube.cardIds, maxP, ppp, cpp, password || null, testMode === true, finalRoomName, {
+      draftMode,
+      flipTargetCards: flipTarget,
+      flipMarketRowSize: flipRowSize,
+    });
     logRoomEvent(room.id, 'room_created', {
       room: summarizeRoomForLog(room),
       creator: {
@@ -411,6 +449,9 @@ function summarizeRoomForLog(room) {
     maxPlayers: room.maxPlayers,
     packsPerPlayer: room.packsPerPlayer,
     cardsPerPack: room.cardsPerPack,
+    draftMode: room.draftMode || 'classic',
+    flipTargetCards: room.flipTargetCards || 45,
+    flipMarketRowSize: room.flipMarketRowSize || 4,
     testMode: room.testMode === true,
     hasPassword: Boolean(room.password),
   };
