@@ -1,4 +1,4 @@
---Kuebiko
+--久延毘古
 local s,id,o=GetID()
 function s.initial_effect(c)
 	--Activate
@@ -13,7 +13,7 @@ function s.initial_effect(c)
 	--negate
 	local e2=Effect.CreateEffect(c)
 	e2:SetDescription(aux.Stringid(id,0))
-	e2:SetCategory(CATEGORY_DISABLE+CATEGORY_TOHAND)
+	e2:SetCategory(CATEGORY_DISABLE+CATEGORY_TOHAND+CATEGORY_SSET)
 	e2:SetType(EFFECT_TYPE_QUICK_O)
 	e2:SetCode(EVENT_CHAINING)
 	e2:SetCountLimit(1)
@@ -47,11 +47,13 @@ function s.discon(e,tp,eg,ep,ev,re,r,rp)
 end
 function s.distg(e,tp,eg,ep,ev,re,r,rp,chk)
 	local c=e:GetHandler()
-	if chk==0 then return c:IsSSetable() end
-	Duel.SetOperationInfo(0,CATEGORY_DISABLE,eg,1,0,0)
+	local rc=re:GetHandler()
 	local g=Duel.GetMatchingGroup(Card.IsFaceup,tp,0,LOCATION_MZONE,nil)
 	local tg=g:GetMaxGroup(Card.GetAttack)
-	if tg:IsContains(re:GetHandler()) and re:GetHandler():IsRelateToEffect(re) then
+	local rchk=tg:IsContains(rc) and rc:IsRelateToEffect(re)
+	if chk==0 then return c:IsSSetable() and (not rchk or rc:IsAbleToHand()) end
+	Duel.SetOperationInfo(0,CATEGORY_DISABLE,eg,1,0,0)
+	if rchk then
 		Duel.SetOperationInfo(0,CATEGORY_TOHAND,eg,1,0,0)
 	end
 end

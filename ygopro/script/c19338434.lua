@@ -1,4 +1,4 @@
---Mimighoul Fork
+--ミミグル・フォーク
 local s,id,o=GetID()
 function s.initial_effect(c)
 	--Activate
@@ -49,8 +49,10 @@ function s.activate(e,tp,eg,ep,ev,re,r,rp)
 		Duel.ChangePosition(tc,pos)
 	else
 		Duel.SendtoGrave(tc,REASON_EFFECT)
-		Duel.BreakEffect()
-		Duel.Draw(p,2,REASON_EFFECT)
+		if tc:IsLocation(LOCATION_GRAVE) then
+			Duel.BreakEffect()
+			Duel.Draw(p,2,REASON_EFFECT)
+		end
 	end
 end
 function s.thfilter(c)
