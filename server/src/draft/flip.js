@@ -4,6 +4,7 @@ import { DRAFT_STATES } from './index.js';
 const DEFAULT_ROW_SIZE = 4;
 const DEFAULT_TARGET_CARDS = 45;
 const DEFAULT_TURN_FUNDS = 4;
+const MAX_TURN_CARDS = 3;
 const ROW_COSTS = [3, 2, 1];
 
 export class FlipDraftEngine {
@@ -14,6 +15,7 @@ export class FlipDraftEngine {
     this.rowSize = DEFAULT_ROW_SIZE;
     this.targetCards = DEFAULT_TARGET_CARDS;
     this.turnFunds = DEFAULT_TURN_FUNDS;
+    this.maxTurnCards = MAX_TURN_CARDS;
     this.drawPile = [];
     this.market = [];
     this.trash = [];
@@ -25,6 +27,7 @@ export class FlipDraftEngine {
     this.turnNumber = 0;
     this.pickRound = 0;
     this.turnStartedAt = null;
+    this.finalRoundStarted = false;
   }
 
   init(players, opts = {}) {
@@ -32,14 +35,17 @@ export class FlipDraftEngine {
     this.rowSize = clampInt(opts.rowSize, DEFAULT_ROW_SIZE, 1, 12);
     this.targetCards = clampInt(opts.targetCards, DEFAULT_TARGET_CARDS, 1, 200);
     this.turnFunds = clampInt(opts.turnFunds, DEFAULT_TURN_FUNDS, 1, 20);
+    this.maxTurnCards = MAX_TURN_CARDS;
     this.drawPile = [...this.cubeCardIds];
     this._shuffle(this.drawPile);
     this.market = Array(this._marketCapacity()).fill(null);
     this.trash = [];
     this.playerPools.clear();
+
     for (const player of this.players) {
       this.playerPools.set(player.id, []);
     }
+
     this.activePlayerIndex = 0;
     this.remainingFunds = this.turnFunds;
     this.turnBoughtCount = 0;
@@ -47,9 +53,11 @@ export class FlipDraftEngine {
     this.turnNumber = 1;
     this.pickRound = 0;
     this.turnStartedAt = Date.now();
+    this.finalRoundStarted = false;
+
     this._fillMarketTop();
-    this._skipReachedPlayers();
     this.state = DRAFT_STATES.DRAFTING;
+
     console.log(`[FlipDraft] ${players.length}P target=${this.targetCards} rowSize=${this.rowSize}`);
   }
 
@@ -57,12 +65,14 @@ export class FlipDraftEngine {
     const timeoutMs = Number.isFinite(opts.turnTimeoutMs) ? opts.turnTimeoutMs : null;
     const now = Date.now();
     const activePlayer = this.getActivePlayer();
+
     return {
       mode: 'flip',
       state: this.state,
       rowSize: this.rowSize,
       targetCards: this.targetCards,
       turnFunds: this.turnFunds,
+      maxTurnCards: this.maxTurnCards,
       turnNumber: this.turnNumber,
       pickRound: this.pickRound,
       activePlayerId: activePlayer?.id || null,
@@ -74,6 +84,7 @@ export class FlipDraftEngine {
       drawRemaining: this.drawPile.length,
       trashCount: this.trash.length,
       cubeExhausted: this.cubeExhausted,
+      finalRoundStarted: this.finalRoundStarted,
       turnStartedAt: this.turnStartedAt,
       turnTimeoutMs: timeoutMs,
       turnDeadlineAt: timeoutMs && this.turnStartedAt ? this.turnStartedAt + timeoutMs : null,
@@ -112,12 +123,14 @@ export class FlipDraftEngine {
     if (this.state !== DRAFT_STATES.DRAFTING) {
       return { success: false, error: '轮抽未开始' };
     }
+
     const activePlayer = this.getActivePlayer();
     if (!activePlayer || activePlayer.id !== playerId) {
       return { success: false, error: '还没有轮到你购买' };
     }
-    if (this._playerReachedTarget(playerId)) {
-      return { success: false, error: '你已达到目标张数' };
+
+    if (this.turnBoughtCount >= this.maxTurnCards) {
+      return { success: false, error: `本回合最多只能抓 ${this.maxTurnCards} 张卡` };
     }
 
     const slot = Number(marketSlot);
@@ -126,7 +139,10 @@ export class FlipDraftEngine {
     }
 
     const pickedId = this.market[slot];
-    if (!pickedId) return { success: false, error: '该位置没有卡片' };
+    if (!pickedId) {
+      return { success: false, error: '该位置没有卡片' };
+    }
+
     if (expectedCardId !== null && Number(expectedCardId) !== pickedId) {
       return { success: false, error: '公共池已更新，请重新选择' };
     }
@@ -143,14 +159,21 @@ export class FlipDraftEngine {
     this.pickRound++;
     this.turnStartedAt = Date.now();
 
+    this._maybeStartFinalRound();
+
     let turnAdvanced = false;
     let marketRefreshed = false;
-    let draftComplete = this._allPlayersReachedTarget();
-    if (!draftComplete && (this.remainingFunds <= 0 || this._playerReachedTarget(playerId) || !this._hasAffordableCard(this.remainingFunds))) {
+    let draftComplete = false;
+
+    if (
+      this.turnBoughtCount >= this.maxTurnCards ||
+      this.remainingFunds <= 0 ||
+      !this._hasAffordableCard(this.remainingFunds)
+    ) {
       const turnResult = this._endCurrentTurn();
       turnAdvanced = turnResult.turnAdvanced;
       marketRefreshed = turnResult.marketRefreshed;
-      draftComplete = this._shouldComplete();
+      draftComplete = turnResult.draftComplete;
     }
 
     if (draftComplete) {
@@ -162,9 +185,12 @@ export class FlipDraftEngine {
       pickedCardId: pickedId,
       spent: cost,
       remainingFunds: this.remainingFunds,
+      turnBoughtCount: this.turnBoughtCount,
+      maxTurnCards: this.maxTurnCards,
       turnAdvanced,
       marketRefreshed,
       draftComplete,
+      finalRoundStarted: this.finalRoundStarted,
       picked: this.playerPools.get(playerId)?.length || 0,
     };
   }
@@ -173,23 +199,31 @@ export class FlipDraftEngine {
     if (this.state !== DRAFT_STATES.DRAFTING) {
       return { success: false, error: '轮抽未开始' };
     }
+
     const activePlayer = this.getActivePlayer();
     if (!activePlayer || activePlayer.id !== playerId) {
       return { success: false, error: '还没有轮到你操作' };
     }
 
     this.pickRound++;
+    this._maybeStartFinalRound();
+
     const turnResult = this._endCurrentTurn();
-    const draftComplete = this._shouldComplete();
+    const draftComplete = turnResult.draftComplete;
+
     if (draftComplete) {
       this.state = DRAFT_STATES.COMPLETE;
     }
+
     return {
       success: true,
       turnAdvanced: turnResult.turnAdvanced,
       marketRefreshed: turnResult.marketRefreshed,
       draftComplete,
+      finalRoundStarted: this.finalRoundStarted,
       remainingFunds: this.remainingFunds,
+      turnBoughtCount: this.turnBoughtCount,
+      maxTurnCards: this.maxTurnCards,
     };
   }
 
@@ -200,6 +234,7 @@ export class FlipDraftEngine {
 
   getPlayerPools() {
     const result = {};
+
     for (const player of this.players) {
       const pool = this.playerPools.get(player.id) || [];
       result[player.id] = {
@@ -208,6 +243,7 @@ export class FlipDraftEngine {
         cards: pool.map(id => cardDB.getCardFull(id)).filter(Boolean),
       };
     }
+
     return result;
   }
 
@@ -216,11 +252,16 @@ export class FlipDraftEngine {
     const pool = this.playerPools.get(playerId) || [];
     const main = [];
     const extra = [];
+
     for (const id of pool) {
       const card = cardDB.getCardFull(id);
-      if (card && (card.type & T_EXTRA)) extra.push(id);
-      else main.push(id);
+      if (card && (card.type & T_EXTRA)) {
+        extra.push(id);
+      } else {
+        main.push(id);
+      }
     }
+
     return [
       '#created by USTC-OnlineCube',
       '#main',
@@ -243,16 +284,20 @@ export class FlipDraftEngine {
     const start = rowIndex * this.rowSize;
     const cost = ROW_COSTS[rowIndex];
     const slots = [];
+
     for (let col = 0; col < this.rowSize; col++) {
       const marketSlot = start + col;
       const id = this.market[marketSlot];
+
       if (!id) {
         slots.push(null);
         continue;
       }
+
       const card = cardDB.getCardFull(id);
       slots.push(card ? { ...card, marketSlot, row: rowIndex, col, cost } : null);
     }
+
     return slots;
   }
 
@@ -264,6 +309,7 @@ export class FlipDraftEngine {
   _fillMarketTop(markExhausted = false) {
     let neededCard = false;
     let drewCard = false;
+
     for (let i = 0; i < this.market.length && this.drawPile.length > 0; i++) {
       if (!this.market[i]) {
         neededCard = true;
@@ -271,6 +317,7 @@ export class FlipDraftEngine {
         drewCard = true;
       }
     }
+
     if (markExhausted) {
       const stillHasEmptySlot = this.market.some(id => !id);
       if (stillHasEmptySlot || (neededCard && drewCard && this.drawPile.length === 0)) {
@@ -283,6 +330,7 @@ export class FlipDraftEngine {
     for (const slot of this._bottomBurnSlots()) {
       const id = this.market[slot];
       if (!id) continue;
+
       this.trash.push(id);
       this.market[slot] = null;
     }
@@ -290,9 +338,11 @@ export class FlipDraftEngine {
     const survivors = this.market.filter(Boolean);
     const next = Array(this._marketCapacity()).fill(null);
     const start = Math.max(0, next.length - survivors.length);
+
     for (let i = 0; i < survivors.length; i++) {
       next[start + i] = survivors[i];
     }
+
     this.market = next;
     this._fillMarketTop(true);
   }
@@ -301,34 +351,26 @@ export class FlipDraftEngine {
     const bottomStart = (ROW_COSTS.length - 1) * this.rowSize;
     const slots = [];
     const firstBurnCol = Math.max(0, this.rowSize - 2);
+
     for (let col = firstBurnCol; col < this.rowSize; col++) {
       slots.push(bottomStart + col);
     }
+
     return slots;
   }
 
   _advanceTurn() {
     if (this.players.length === 0) return;
-    const currentIndex = this.activePlayerIndex;
-    for (let step = 1; step <= this.players.length; step++) {
-      const nextIndex = (currentIndex + step) % this.players.length;
-      const nextPlayer = this.players[nextIndex];
-      if (!this._playerReachedTarget(nextPlayer.id)) {
-        this.activePlayerIndex = nextIndex;
-        this.remainingFunds = this.turnFunds;
-        this.turnBoughtCount = 0;
-        this.turnNumber++;
-        this.turnStartedAt = Date.now();
-        return;
-      }
-    }
+
+    this.activePlayerIndex = (this.activePlayerIndex + 1) % this.players.length;
+    this.remainingFunds = this.turnFunds;
+    this.turnBoughtCount = 0;
+    this.turnNumber++;
+    this.turnStartedAt = Date.now();
   }
 
   _skipReachedPlayers() {
-    const active = this.getActivePlayer();
-    if (active && this._playerReachedTarget(active.id) && !this._allPlayersReachedTarget()) {
-      this._advanceTurn();
-    }
+    return;
   }
 
   _playerReachedTarget(playerId) {
@@ -343,22 +385,44 @@ export class FlipDraftEngine {
     return this.market.some((id, slot) => id && this._slotCost(slot) <= funds);
   }
 
+  _maybeStartFinalRound() {
+    if (!this.finalRoundStarted && this._allPlayersReachedTarget()) {
+      this.finalRoundStarted = true;
+    }
+  }
+
+  _isRoundLastPlayer() {
+    return this.players.length > 0 && this.activePlayerIndex === this.players.length - 1;
+  }
+
+  _shouldCompleteAtTurnEnd() {
+    return this.cubeExhausted || (this.finalRoundStarted && this._isRoundLastPlayer());
+  }
+
   _shouldComplete() {
-    return this._allPlayersReachedTarget() || this.cubeExhausted;
+    return this._shouldCompleteAtTurnEnd();
   }
 
   _endCurrentTurn() {
-    const marketRefreshed = this.turnBoughtCount > 0;
-    if (marketRefreshed) {
-      this._refreshMarketAtTurnEnd();
-    }
+    const marketRefreshed = true;
+    this._refreshMarketAtTurnEnd();
+    this._maybeStartFinalRound();
 
-    if (this._shouldComplete()) {
-      return { turnAdvanced: false, marketRefreshed };
+    if (this._shouldCompleteAtTurnEnd()) {
+      return {
+        turnAdvanced: false,
+        marketRefreshed,
+        draftComplete: true,
+      };
     }
 
     this._advanceTurn();
-    return { turnAdvanced: true, marketRefreshed };
+
+    return {
+      turnAdvanced: true,
+      marketRefreshed,
+      draftComplete: false,
+    };
   }
 
   _sortPlayersBySeat(players) {
@@ -372,6 +436,7 @@ export class FlipDraftEngine {
       .sort((a, b) => {
         const aSeat = Number.isFinite(a.seatIndex) ? a.seatIndex : Number.MAX_SAFE_INTEGER;
         const bSeat = Number.isFinite(b.seatIndex) ? b.seatIndex : Number.MAX_SAFE_INTEGER;
+
         if (aSeat !== bSeat) return aSeat - bSeat;
         return a.originalIndex - b.originalIndex;
       })
@@ -383,6 +448,7 @@ export class FlipDraftEngine {
       const j = Math.floor(Math.random() * (i + 1));
       [arr[i], arr[j]] = [arr[j], arr[i]];
     }
+
     return arr;
   }
 }
