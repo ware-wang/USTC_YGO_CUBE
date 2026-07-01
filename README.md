@@ -1,7 +1,12 @@
-# USTC-OnlineCube — 游戏王 Cube 轮抽 + 在线对战
+# USTC-OnlineCube — 游戏王 Cube 轮抽 + 在线对战 jr_update_ver
 
+-**由jinrui2000负责更新的版本，在目前（26年7月1日）的服务器上适用**
 基于 ygopro 卡牌数据库的网页端 Cube 轮抽系统，集成 **neos-ts** 在线对战引擎。支持多人轮抽、组卡、YDK 导出，以及**在浏览器中进行实时对战**。
 
+## 本分支更新
+-**260701（jr_update_ver分支）** 更新新cube卡池jr_cube_v1.0 移除黑羽，添加蛇眼和k9，更新大量装备魔法
+
+-**260616（jr_update_ver分支）** 修复翻翻乐规则，确保结束前所有人均可抓牌
 
 ## 功能
 
@@ -561,10 +566,7 @@ sudo systemctl status cube-draft
 
 如果你是新接手的模型，建议先读 `llm-docs/README.md`。
 
-## 更新
--**260701（jr_update_ver分支）** 更新新cube卡池jr_cube_v1.0 移除黑羽，添加蛇眼和k9，更新大量装备魔法
 
--**260616（jr_update_ver分支）** 修复翻翻乐规则，确保结束前所有人均可抓牌
 
 ## License
 
